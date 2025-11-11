@@ -1,7 +1,7 @@
 {
   "name": "dotnet-prune-vscode",
-  "displayName": "DotNet Prune",
-  "description": "Show DotNet Prune analysis results in VS Code Problems panel by reading the JSON report.",
+  "displayName": "DotNetPrune",
+  "description": "Show DotNetPrune analysis results in VS Code Problems panel and Activity Bar by reading or running the JSON report.",
   "version": "0.0.1",
   "publisher": "nomad-in-code",
   "icon": "./resources/icon.png",
@@ -21,18 +21,29 @@
     "Linters"
   ],
   "activationEvents": [
-    "workspaceContains:**/dotnetprune-report.json"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "dotnetprune.refreshReport",
-        "title": "DotNetPrune: Refresh Report"
+        "command": "dotnetprune.refresh",
+        "title": "DotNetPrune: Refresh Findings"
+      },
+      {
+        "command": "dotnetprune.runAnalysis",
+        "title": "DotNetPrune: Run Analysis (external tool)"
       },
       {
         "command": "dotnetprune.openReport",
         "title": "DotNetPrune: Open Report File"
+      },
+      {
+        "command": "dotnetprune.clearFindings",
+        "title": "DotNetPrune: Clear Findings"
+      },
+      {
+        "command": "dotnetprune.openFinding",
+        "title": "DotNetPrune: Open Finding"
       }
     ],
     "configuration": {
@@ -44,17 +55,39 @@
           "default": "",
           "description": "Path to the DotNetPrune JSON report. Can be absolute or workspace-relative. If empty, extension will search for dotnetprune-report.json in the workspace root."
         },
+        "dotNetPrune.toolCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Optional external command to run DotNetPrune and produce the JSON report. Use ${solution}, ${reportPath}, and ${workspaceRoot} placeholders."
+        },
         "dotNetPrune.showOnlyHighConfidence": {
           "type": "boolean",
           "default": false,
-          "description": "If true, show only high-confidence findings (configurable from the report)."
+          "description": "If true, show only high-confidence findings (requires the report to include a confidence field)."
         }
       }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dotnetprune.views",
+          "title": "DotNetPrune",
+          "icon": "resources/gray.png"
+        }
+      ]
+    },
+    "views": {
+      "dotnetprune.views": [
+        {
+          "id": "dotnetprune.views.findings",
+          "name": "Findings"
+        }
+      ]
     }
   },
   "scripts": {
     "compile": "node esbuild.js",
-    "dotnet:publish":"dotnet publish ./FindUnused/FindUnused.csproj --output ./dist/FindUnused/",
+    "dotnet:publish": "dotnet publish ./FindUnused/FindUnused.csproj --output ./dist/FindUnused/",
     "package": "pnpm compile && pnpm dotnet:publish && vsce package"
   },
   "devDependencies": {
