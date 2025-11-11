@@ -1,7 +1,7 @@
 {
   "name": "dotnet-prune-vscode",
   "displayName": "DotNetPrune",
-  "description": "Show DotNetPrune analysis results in VS Code Problems panel and Activity Bar by reading or running the JSON report.",
+  "description": "Show DotNetPrune analysis results in VS Code Activity Bar by reading or generating the JSON report.",
   "version": "0.0.1",
   "publisher": "nomad-in-code",
   "icon": "./resources/icon.png",
