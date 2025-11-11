@@ -87,8 +87,9 @@
   },
   "scripts": {
     "compile": "node esbuild.js",
+    "clean":"rm -rf dotnet-prune-vscode-0.0.1.vsix",
     "dotnet:publish": "dotnet publish ./FindUnused/FindUnused.csproj --output ./dist/FindUnused/",
-    "package": "pnpm compile && pnpm dotnet:publish && vsce package"
+    "package": "pnpm clean && pnpm compile && pnpm dotnet:publish && vsce package"
   },
   "devDependencies": {
     "@types/vscode": "^1.105.0",
