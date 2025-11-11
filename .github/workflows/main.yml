@@ -25,10 +25,24 @@ jobs:
         node-version: '24'
 
     - name: Install dependencies
-      run: npm i
+      run: npm i -g pnpm
 
     - name: Compile extension
-      run: npm run compile
+      run: pnpm compile
+
+    # .NET Build for roslyn-tool
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x' # adjust as needed
+    
+    - name: Restore NuGet packages in FindUnused
+      run: dotnet restore
+      working-directory: FindUnused
+    
+    - name: Build FindUnused project
+      run: dotnet build
+      working-directory: FindUnused
 
     - name: Package extension
       run: |
