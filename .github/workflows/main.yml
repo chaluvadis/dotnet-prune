@@ -1,0 +1,88 @@
+name: Build & Release VS Code Extension
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Ensures tags are available
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+
+    - name: Install dependencies
+      run: npm i -g pnpm
+
+    - name: Compile extension
+      run: pnpm compile
+
+    # .NET Build for roslyn-tool
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x' # adjust as needed
+    
+    - name: Restore NuGet packages in FindUnused
+      run: dotnet restore
+      working-directory: FindUnused
+    
+    - name: Build FindUnused project
+      run: dotnet build
+      working-directory: FindUnused
+
+    - name: Package extension
+      run: |
+        # Use the tag name as part of the VSIX filename when available.
+        TAG="${{ github.ref_name }}"
+        if [ -z "$TAG" ]; then
+          TAG="$(echo "${GITHUB_SHA}" | cut -c1-7)"
+        fi
+        OUT="dotnet-prune-${TAG}.vsix"
+        echo "OUT=${OUT}" >> $GITHUB_ENV
+        echo "Packaging VSIX -> ${OUT}"
+        npx vsce package --out "${OUT}"
+      shell: bash
+
+    - name: Get VSIX name
+      id: get_version
+      run: |
+        echo "VSIX_NAME=$(ls *.vsix | head -n 1)" >> $GITHUB_ENV
+
+    - name: Check VSCE token
+      run: |
+        if [ -z "${{ secrets.VSCE_TOKEN }}" ]; then
+          echo "ERROR: VSCE_TOKEN repository secret is not set. Add it in Settings → Secrets and variables → Actions → New repository secret (name: VSCE_TOKEN)." >&2
+          exit 1
+        fi
+      shell: bash
+
+    - name: Publish to Visual Studio Marketplace
+      env:
+        VSIX_NAME: ${{ env.VSIX_NAME }}
+        VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
+      run: |
+        echo "Publishing ${VSIX_NAME} to Visual Studio Marketplace"
+        # Publish using vsce and the PAT you stored in VSCE_TOKEN
+        npx vsce publish --packagePath "${VSIX_NAME}" --pat "${VSCE_TOKEN}"
+      shell: bash
+
+    - name: Create GitHub Release and upload VSIX
+      uses: softprops/action-gh-release@v2
+      with:
+        files: ${{ env.VSIX_NAME }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

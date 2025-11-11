@@ -1,0 +1,70 @@
+{
+  "name": "dotnetprune-vscode",
+  "displayName": "DotNetPrune",
+  "description": "Show DotNetPrune analysis results in VS Code Problems panel by reading the JSON report.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Linters"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/dotnetprune-report.json"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "dotnetprune.refreshReport",
+        "title": "DotNetPrune: Refresh Report"
+      },
+      {
+        "command": "dotnetprune.openReport",
+        "title": "DotNetPrune: Open Report File"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "DotNetPrune",
+      "properties": {
+        "dotNetPrune.reportPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the DotNetPrune JSON report. Can be absolute or workspace-relative. If empty, extension will search for dotnetprune-report.json in the workspace root."
+        },
+        "dotNetPrune.showOnlyHighConfidence": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, show only high-confidence findings (configurable from the report)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "pnpm run package",
+    "compile": "pnpm run check-types && pnpm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "pnpm run check-types && pnpm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.105.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.10.0",
+    "typescript-eslint": "^8.46.4",
+    "eslint": "^9.39.1",
+    "esbuild": "^0.27.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
