@@ -1,7 +1,7 @@
 {
-  "name": "dotnetprune-vscode",
-  "displayName": "DotNetPrune",
-  "description": "Show DotNetPrune analysis results in VS Code Problems panel by reading the JSON report.",
+  "name": "dotnet-prune-vscode",
+  "displayName": "DotNet Prune",
+  "description": "Show DotNet Prune analysis results in VS Code Problems panel by reading the JSON report.",
   "version": "0.0.1",
   "publisher": "nomad-in-code",
   "icon": "./resources/icon.png",
@@ -53,19 +53,9 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "pnpm run package",
     "compile": "node esbuild.js",
-    "watch": "npm-run-all -p watch:*",
-    "watch:esbuild": "node esbuild.js --watch",
-    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "compile-tests": "tsc -p . --outDir out",
-    "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
-    "check-types": "tsc --noEmit",
-    "lint": "eslint src",
-    "test": "vscode-test",
-    "publish":"dotnet publish ./FindUnused/FindUnused.csproj --output ./dist/FindUnused/",
-    "package": "pnpm run check-types && pnpm publish && vsce package"
+    "dotnet:publish":"dotnet publish ./FindUnused/FindUnused.csproj --output ./dist/FindUnused/",
+    "package": "pnpm compile && pnpm dotnet:publish && vsce package"
   },
   "devDependencies": {
     "@types/vscode": "^1.105.0",
