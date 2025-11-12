@@ -40,7 +40,6 @@ public class FindUnusedAnalyzer
     /// <param name="includePublic">Include public symbols in analysis</param>
     /// <param name="includeInternal">Include internal symbols in analysis</param>
     /// <param name="excludeGenerated">Exclude generated code from analysis</param>
-    /// <param name="reportPath">Output report file path (null for no file output)</param>
     /// <param name="progress">Optional progress reporter for UI updates</param>
     /// <returns>Analysis results</returns>
     public static async Task<AnalysisResult> RunAnalysisAsync(
@@ -48,7 +47,6 @@ public class FindUnusedAnalyzer
         bool includePublic = true,
         bool includeInternal = true,
         bool excludeGenerated = true,
-        string? reportPath = null,
         IProgress<string>? progress = null)
     {
         // Input validation
@@ -108,7 +106,7 @@ public class FindUnusedAnalyzer
             {
                 // Finalize analysis
                 progress?.Report($"\nAnalysis complete. Findings: {findings.Count}");
-                await WriteReportAsync(findings, reportPath, progress);
+                await WriteReportAsync(findings);
             }
             return new AnalysisResult
             {
@@ -127,26 +125,12 @@ public class FindUnusedAnalyzer
         }
     }
 
-    private static async Task WriteReportAsync(List<Finding> findings, string? reportPath, IProgress<string>? progress)
+    private static async Task WriteReportAsync(List<Finding> findings)
     {
         var json = JsonSerializer.Serialize(findings, GetOptions());
 
-        // Always output JSON to stdout for extension consumption
+        // Output JSON to stdout for extension consumption
         Console.WriteLine(json);
-
-        // Optionally write to file if reportPath provided (for backward compatibility)
-        if (!string.IsNullOrEmpty(reportPath))
-        {
-            try
-            {
-                await File.WriteAllTextAsync(reportPath, json);
-                progress?.Report($"Report written to {reportPath}");
-            }
-            catch (Exception ex)
-            {
-                progress?.Report($"Failed to write report: {ex.Message}");
-            }
-        }
     }
 
     private static bool IsReferenceInSolutionSource(Location loc, Solution solution, HashSet<ProjectId> solutionProjectIds)
@@ -927,13 +911,12 @@ class Program
             Console.WriteLine("  --no-internal         Exclude internal symbols from analysis");
             Console.WriteLine("  --exclude-generated    Exclude generated code from analysis (default: true)");
             Console.WriteLine("  --include-generated    Include generated code in analysis");
-            Console.WriteLine("  --report <path>        Output report file path (JSON format)");
             Console.WriteLine("  --verbose             Enable verbose output");
             Console.WriteLine("  --help, -h            Show help information");
             Console.WriteLine();
             Console.WriteLine("Examples:");
             Console.WriteLine("  dotnet run FindUnused.dll ./MySolution.sln");
-            Console.WriteLine("  dotnet run FindUnused.dll ./MyProject.csproj --report ./report.json");
+            Console.WriteLine("  dotnet run FindUnused.dll ./MyProject.csproj");
             Console.WriteLine("  dotnet run FindUnused.dll ./ --no-public --include-internal");
             return 0;
         }
@@ -943,7 +926,6 @@ class Program
         bool includePublic = true;
         bool includeInternal = true;
         bool excludeGenerated = true;
-        string? reportPath = null;
         bool verbose = false;
 
         for (int i = 0; i < argsList.Count; i++)
@@ -972,19 +954,6 @@ class Program
                 case "--include-generated":
                 case "--generated":
                     excludeGenerated = false;
-                    break;
-                case "--report":
-                case "--output":
-                case "--report-path":
-                    if (i + 1 < argsList.Count)
-                    {
-                        reportPath = argsList[++i];
-                    }
-                    else
-                    {
-                        Console.WriteLine("Error: --report option requires a file path");
-                        return 1;
-                    }
                     break;
                 case "--verbose":
                 case "-v":
@@ -1016,10 +985,6 @@ class Program
             Console.WriteLine($"Include public: {includePublic}");
             Console.WriteLine($"Include internal: {includeInternal}");
             Console.WriteLine($"Exclude generated: {excludeGenerated}");
-            if (!string.IsNullOrEmpty(reportPath))
-            {
-                Console.WriteLine($"Report path: {reportPath}");
-            }
             Console.WriteLine();
 
             var result = await FindUnusedAnalyzer.RunAnalysisAsync(
@@ -1027,7 +992,6 @@ class Program
                 includePublic,
                 includeInternal,
                 excludeGenerated,
-                reportPath,
                 progress);
 
             if (result.Success)
