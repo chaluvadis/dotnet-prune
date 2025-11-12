@@ -1,4 +1,5 @@
-namespace FindUnused;
+namespace FindUnusedConsole;
+
 /// <summary>
 /// Result object for analysis operations
 /// </summary>
@@ -9,6 +10,7 @@ public record AnalysisResult
     public string? ErrorMessage { get; set; }
     public int FindingsCount => Findings.Count;
 }
+
 /// <summary>
 /// Represents a finding of unused code
 /// </summary>
@@ -23,12 +25,14 @@ public record Finding
     public string Accessibility { get; set; } = string.Empty;
     public string Remarks { get; set; } = string.Empty;
 }
+
 /// <summary>
 /// Main analysis class for finding unused C# code symbols
 /// </summary>
 public class FindUnusedAnalyzer
 {
     private static JsonSerializerOptions GetOptions() => new() { WriteIndented = true };
+
     /// <summary>
     /// Run the analysis with specified parameters
     /// </summary>
@@ -122,12 +126,40 @@ public class FindUnusedAnalyzer
             };
         }
     }
+
+    private static async Task WriteReportAsync(List<Finding> findings, string? reportPath, IProgress<string>? progress)
+    {
+        if (!string.IsNullOrEmpty(reportPath))
+        {
+            try
+            {
+                var json = JsonSerializer.Serialize(findings, GetOptions());
+                await File.WriteAllTextAsync(reportPath, json);
+                progress?.Report($"Report written to {reportPath}");
+            }
+            catch (Exception ex)
+            {
+                progress?.Report($"Failed to write report: {ex.Message}");
+            }
+        }
+        else
+        {
+            progress?.Report("\nFindings (sample):");
+            foreach (var f in findings.Take(10))
+            {
+                progress?.Report($"{f.Project} | {f.SymbolKind} | {f.ContainingType} | {f.SymbolName} | {f.Accessibility} | {f.FilePath}:{f.Line} => {f.Remarks}");
+            }
+            progress?.Report("Done.");
+        }
+    }
+
     private static bool IsReferenceInSolutionSource(Location loc, Solution solution, HashSet<ProjectId> solutionProjectIds)
     {
         if (loc == null || !loc.IsInSource) return false;
         var doc = solution.GetDocument(loc.SourceTree);
         return doc != null && solutionProjectIds.Contains(doc.Project.Id);
     }
+
     private static async Task<(Solution? solution, HashSet<ProjectId>? projectIds)> SetupWorkspaceAsync(string targetPath, IProgress<string>? progress)
     {
         MSBuildLocator.RegisterDefaults();
@@ -143,6 +175,7 @@ public class FindUnusedAnalyzer
         var solutionProjectIds = new HashSet<ProjectId>(solution.Projects.Select(p => p.Id));
         return (solution, solutionProjectIds);
     }
+
     private static async Task<Dictionary<Project, List<INamedTypeSymbol>>> BuildProjectDeclaredTypesMapAsync(
         Solution solution,
         HashSet<string> declaredNamespaces)
@@ -174,6 +207,7 @@ public class FindUnusedAnalyzer
         }
         return projectDeclaredTypes;
     }
+
     private static async Task<List<Finding>> AnalyzeProjectAsync(
         Project project,
         Solution solution,
@@ -227,6 +261,7 @@ public class FindUnusedAnalyzer
         }
         return projectFindings;
     }
+
     private static async Task<Compilation?> GetProjectCompilationAsync(Project project, IProgress<string>? progress)
     {
         try
@@ -245,6 +280,7 @@ public class FindUnusedAnalyzer
             return null;
         }
     }
+
     private static async Task<(List<Finding> findings, bool typeHasReferencedMember)> AnalyzeTypeAsync(
         INamedTypeSymbol type,
         Project project,
@@ -310,6 +346,7 @@ public class FindUnusedAnalyzer
         }
         return (findings, typeHasReferencedMember);
     }
+
     private static async Task<(List<Finding> findings, bool referenced)> AnalyzeMethodAsync(
         IMethodSymbol method,
         INamedTypeSymbol type,
@@ -375,6 +412,7 @@ public class FindUnusedAnalyzer
         findings.AddRange(parameterFindings);
         return (findings, referenced);
     }
+
     private static async Task<List<Finding>> AnalyzeMethodParametersAsync(
         IMethodSymbol method,
         INamedTypeSymbol type,
@@ -419,6 +457,7 @@ public class FindUnusedAnalyzer
         }
         return findings;
     }
+
     private static async Task<(List<Finding> findings, bool referenced)> AnalyzePropertyAsync(
         IPropertySymbol prop,
         INamedTypeSymbol type,
@@ -472,6 +511,7 @@ public class FindUnusedAnalyzer
         }
         return (findings, referenced);
     }
+
     private static async Task<(List<Finding> findings, bool referenced)> AnalyzeFieldAsync(
         IFieldSymbol field,
         INamedTypeSymbol type,
@@ -524,6 +564,7 @@ public class FindUnusedAnalyzer
         }
         return (findings, referenced);
     }
+
     private static async Task<List<Finding>> AnalyzeTypeUsageAsync(
         INamedTypeSymbol type,
         Solution solution,
@@ -597,6 +638,7 @@ public class FindUnusedAnalyzer
         }
         return findings;
     }
+
     private static async Task<bool> CheckInterfaceImplementationsAsync(
         INamedTypeSymbol type,
         Solution solution,
@@ -627,6 +669,7 @@ public class FindUnusedAnalyzer
         }
         return false;
     }
+
     private static async Task<bool> CheckDerivedClassesAsync(
         INamedTypeSymbol type,
         Solution solution,
@@ -651,31 +694,7 @@ public class FindUnusedAnalyzer
         }
         return false;
     }
-    private static async Task WriteReportAsync(List<Finding> findings, string? reportPath, IProgress<string>? progress)
-    {
-        if (!string.IsNullOrEmpty(reportPath))
-        {
-            try
-            {
-                var json = JsonSerializer.Serialize(findings, GetOptions());
-                await File.WriteAllTextAsync(reportPath, json);
-                progress?.Report($"Report written to {reportPath}");
-            }
-            catch (Exception ex)
-            {
-                progress?.Report($"Failed to write report: {ex.Message}");
-            }
-        }
-        else
-        {
-            progress?.Report("\nFindings (sample):");
-            foreach (var f in findings.Take(10))
-            {
-                progress?.Report($"{f.Project} | {f.SymbolKind} | {f.ContainingType} | {f.SymbolName} | {f.Accessibility} | {f.FilePath}:{f.Line} => {f.Remarks}");
-            }
-            progress?.Report("Done.");
-        }
-    }
+
     private static async Task<List<INamedTypeSymbol>> GetDeclaredTypesInProjectAsync(Project project)
     {
         var set = new List<INamedTypeSymbol>();
@@ -711,14 +730,17 @@ public class FindUnusedAnalyzer
         }
         return set;
     }
+
     private static Location? GetSourceLocation(ISymbol symbol)
         => symbol.Locations.FirstOrDefault(l => l.IsInSource);
+
     private static (int line, int col) GetLinePosition(Location loc)
     {
         if (loc == null || loc.SourceTree == null) return (-1, -1);
         var pos = loc.GetLineSpan().StartLinePosition;
         return (pos.Line + 1, pos.Character + 1);
     }
+
     private static bool IsGenerated(SyntaxTree? tree)
     {
         if (tree == null) return false;
@@ -729,6 +751,7 @@ public class FindUnusedAnalyzer
         var low = first.ToLowerInvariant();
         return markers.Any(m => low.Contains(m));
     }
+
     private static bool IsNamespaceAllowed(INamespaceSymbol nsSymbol, HashSet<string> declaredNamespaces)
     {
         // If declaredNamespaces was left intentionally empty (no filtering), allow everything
@@ -753,6 +776,7 @@ public class FindUnusedAnalyzer
         }
         return false;
     }
+
     private static async Task<Solution?> LoadSolutionFromPath(string targetPath, MSBuildWorkspace workspace)
     {
         if (targetPath.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) || targetPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
@@ -782,6 +806,7 @@ public class FindUnusedAnalyzer
             }
         }
     }
+
     /// <summary>
     /// Scans all source documents in the solution and returns the set of declared namespace names.
     /// - Adds empty string if there are top-level types in the global namespace.
@@ -820,6 +845,7 @@ public class FindUnusedAnalyzer
         }
         return set;
     }
+
     /// <summary>
     /// Manual semantic search fallback for type usages. Scans documents that contain the simple name and uses the semantic model.
     /// </summary>
@@ -878,5 +904,168 @@ public class FindUnusedAnalyzer
             }
         }
         return false;
+    }
+}
+
+class Program
+{
+    static async Task<int> Main(string[] args)
+    {
+        var argsList = args.ToList();
+
+        // Display help if no arguments provided
+        if (argsList.Count == 0 || argsList.Contains("--help") || argsList.Contains("-h"))
+        {
+            Console.WriteLine("FindUnused - Analyzes .NET solutions for unused code symbols");
+            Console.WriteLine();
+            Console.WriteLine("Usage:");
+            Console.WriteLine("  dotnet run FindUnused.dll <target-path> [options]");
+            Console.WriteLine();
+            Console.WriteLine("Arguments:");
+            Console.WriteLine("  <target-path>          Path to .slnx, .sln, .csproj file or folder to analyze");
+            Console.WriteLine();
+            Console.WriteLine("Options:");
+            Console.WriteLine("  --include-public       Include public symbols in analysis (default: true)");
+            Console.WriteLine("  --no-public           Exclude public symbols from analysis");
+            Console.WriteLine("  --include-internal     Include internal symbols in analysis (default: true)");
+            Console.WriteLine("  --no-internal         Exclude internal symbols from analysis");
+            Console.WriteLine("  --exclude-generated    Exclude generated code from analysis (default: true)");
+            Console.WriteLine("  --include-generated    Include generated code in analysis");
+            Console.WriteLine("  --report <path>        Output report file path (JSON format)");
+            Console.WriteLine("  --verbose             Enable verbose output");
+            Console.WriteLine("  --help, -h            Show help information");
+            Console.WriteLine();
+            Console.WriteLine("Examples:");
+            Console.WriteLine("  dotnet run FindUnused.dll ./MySolution.sln");
+            Console.WriteLine("  dotnet run FindUnused.dll ./MyProject.csproj --report ./report.json");
+            Console.WriteLine("  dotnet run FindUnused.dll ./ --no-public --include-internal");
+            return 0;
+        }
+
+        // Parse arguments
+        string? targetPath = null;
+        bool includePublic = true;
+        bool includeInternal = true;
+        bool excludeGenerated = true;
+        string? reportPath = null;
+        bool verbose = false;
+
+        for (int i = 0; i < argsList.Count; i++)
+        {
+            var arg = argsList[i];
+            switch (arg.ToLowerInvariant())
+            {
+                case "--include-public":
+                case "--public":
+                    includePublic = true;
+                    break;
+                case "--no-public":
+                    includePublic = false;
+                    break;
+                case "--include-internal":
+                case "--internal":
+                    includeInternal = true;
+                    break;
+                case "--no-internal":
+                    includeInternal = false;
+                    break;
+                case "--exclude-generated":
+                case "--no-generated":
+                    excludeGenerated = true;
+                    break;
+                case "--include-generated":
+                case "--generated":
+                    excludeGenerated = false;
+                    break;
+                case "--report":
+                case "--output":
+                case "--report-path":
+                    if (i + 1 < argsList.Count)
+                    {
+                        reportPath = argsList[++i];
+                    }
+                    else
+                    {
+                        Console.WriteLine("Error: --report option requires a file path");
+                        return 1;
+                    }
+                    break;
+                case "--verbose":
+                case "-v":
+                    verbose = true;
+                    break;
+                default:
+                    // If it doesn't start with --, consider it the target path
+                    if (!arg.StartsWith("--") && targetPath == null)
+                    {
+                        targetPath = arg;
+                    }
+                    break;
+            }
+        }
+
+        // Validate target path
+        if (string.IsNullOrWhiteSpace(targetPath))
+        {
+            Console.WriteLine("Error: Target path is required");
+            Console.WriteLine("Use --help for usage information");
+            return 1;
+        }
+
+        try
+        {
+            var progress = verbose ? new Progress<string>(msg => Console.WriteLine($"[Progress] {msg}")) : null;
+
+            Console.WriteLine($"Starting analysis of: {targetPath}");
+            Console.WriteLine($"Include public: {includePublic}");
+            Console.WriteLine($"Include internal: {includeInternal}");
+            Console.WriteLine($"Exclude generated: {excludeGenerated}");
+            if (!string.IsNullOrEmpty(reportPath))
+            {
+                Console.WriteLine($"Report path: {reportPath}");
+            }
+            Console.WriteLine();
+
+            var result = await FindUnusedAnalyzer.RunAnalysisAsync(
+                targetPath,
+                includePublic,
+                includeInternal,
+                excludeGenerated,
+                reportPath,
+                progress);
+
+            if (result.Success)
+            {
+                Console.WriteLine($"\nAnalysis completed successfully!");
+                Console.WriteLine($"Total findings: {result.FindingsCount}");
+
+                if (result.FindingsCount > 0)
+                {
+                    Console.WriteLine("\nSummary of findings:");
+                    var groupedByType = result.Findings
+                        .GroupBy(f => f.SymbolKind)
+                        .OrderBy(g => g.Key);
+
+                    foreach (var group in groupedByType)
+                    {
+                        Console.WriteLine($"  {group.Key}: {group.Count()}");
+                    }
+                }
+
+                // Exit with error code if findings were detected
+                return result.FindingsCount > 0 ? 1 : 0;
+            }
+            else
+            {
+                Console.WriteLine($"\nAnalysis failed: {result.ErrorMessage}");
+                return 1;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Unexpected error: {ex.Message}");
+            Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            return 1;
+        }
     }
 }
