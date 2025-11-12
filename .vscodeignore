@@ -44,3 +44,6 @@ temp_vsix
 TestProject
 BuildHost*
 *.pdb
+pnpm-lock.yaml
+biome.json
+.kilocodemodes

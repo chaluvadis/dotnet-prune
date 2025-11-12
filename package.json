@@ -70,17 +70,18 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "dotnetprune.views",
+          "id": "dotnetprune-views",
           "title": "DotNetPrune",
           "icon": "resources/gray.png"
         }
       ]
     },
     "views": {
-      "dotnetprune.views": [
+      "dotnetprune-views": [
         {
-          "id": "dotnetprune.views.findings",
-          "name": "Findings"
+          "id": "dotnetprune-findings",
+          "name": "Findings",
+          "icon": "./resources/icon.png"
         }
       ]
     }

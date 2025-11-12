@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
-import * as cp from "child_process";
-import { promisify } from "util";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as cp from "node:child_process";
+import { promisify } from "node:util";
 
 const exec = promisify(cp.exec);
 
@@ -22,7 +22,7 @@ type Finding = {
 
 export function activate(context: vscode.ExtensionContext) {
 	const provider = new UnusedTreeProvider();
-	const treeView = vscode.window.createTreeView("dotnetprune.views.findings", {
+	const treeView = vscode.window.createTreeView("dotnetprune-findings", {
 		treeDataProvider: provider,
 		showCollapseAll: true,
 	});
@@ -62,25 +62,17 @@ export function deactivate() {
 }
 
 class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
-	private _onDidChangeTreeData: vscode.EventEmitter<
-		TreeItemBase | undefined | void
-	> = new vscode.EventEmitter<TreeItemBase | undefined>();
-	readonly onDidChangeTreeData: vscode.Event<TreeItemBase | undefined | void> =
+	private _onDidChangeTreeData: vscode.EventEmitter<TreeItemBase | undefined> =
+		new vscode.EventEmitter<TreeItemBase | undefined>();
+	readonly onDidChangeTreeData: vscode.Event<TreeItemBase | undefined> =
 		this._onDidChangeTreeData.event;
-
 	private findings: Finding[] = [];
 	private groupedByProject: Map<string, Map<string, Finding[]>> = new Map();
-
-	constructor() {}
-
 	refresh(): void {
-		this.loadReport()
-			.then(() => {
-				this._onDidChangeTreeData.fire();
-			})
+		this.runAnalysisAndRefresh(true)
 			.catch((err) => {
 				vscode.window.showErrorMessage(
-					`DotNetPrune: Failed to load report: ${err}`,
+					`DotNetPrune: Failed to run analysis: ${err}`,
 				);
 			});
 	}
@@ -88,13 +80,12 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 	clear(): void {
 		this.findings = [];
 		this.groupedByProject.clear();
-		this._onDidChangeTreeData.fire();
+		this._onDidChangeTreeData.fire(undefined);
 		vscode.window.showInformationMessage("DotNetPrune: findings cleared.");
 	}
 
-	async runAnalysisAndRefresh(): Promise<void> {
+	async runAnalysisAndRefresh(silent: boolean = false): Promise<void> {
 		const config = vscode.workspace.getConfiguration("dotNetPrune");
-		const toolCmdTemplate = config.get<string>("toolCommand") ?? "";
 		const reportPathSetting = config.get<string>("reportPath") ?? "";
 
 		const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -129,15 +120,13 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 		];
 		if (allCandidates.length === 0) {
 			vscode.window.showWarningMessage(
-				"DotNetPrune: No .sln/.slnx/.csproj found in workspace. Please configure toolCommand/reportPath or add a project/solution to the workspace.",
+				"DotNetPrune: No .sln/.slnx/.csproj found in workspace. Please add a project/solution to the workspace.",
 			);
 			return;
 		}
 
-		let chosen: vscode.Uri;
-		if (allCandidates.length === 1) {
-			chosen = allCandidates[0];
-		} else {
+		let chosen = allCandidates[0];
+		if (allCandidates.length > 1 && !silent) {
 			const picks = allCandidates.map((u) => ({
 				label: path.relative(vscode.workspace.rootPath || "", u.fsPath),
 				uri: u,
@@ -158,71 +147,42 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 						"dotnetprune-report.json",
 					);
 
-		// If user provided tool command, substitute placeholders and run it.
-		if (toolCmdTemplate && toolCmdTemplate.trim().length > 0) {
-			const toolCmd = toolCmdTemplate
-				.replace(/\$\{solution\}/g, `"${chosen.fsPath}"`)
-				.replace(/\$\{reportPath\}/g, `"${defaultReport}"`)
-				.replace(
-					/\$\{workspaceRoot\}/g,
-					`"${vscode.workspace.rootPath || "."}"`,
-				);
-			const run = await vscode.window.withProgress(
-				{
-					location: vscode.ProgressLocation.Notification,
-					title: "DotNetPrune: running analysis",
-					cancellable: false,
-				},
-				async (progress) => {
-					progress.report({ message: "Executing external tool..." });
-					try {
-						// Use shell execution so complex templates work.
-						const { stdout, stderr } = await exec(toolCmd, {
-							cwd: vscode.workspace.rootPath,
-						});
-						if (stderr && stderr.trim().length > 0) {
-							// non-fatal: surface to output channel
-							this.appendToOutput(stderr);
-						}
-						this.appendToOutput(stdout);
-						return true;
-					} catch (err: any) {
-						vscode.window.showErrorMessage(
-							`DotNetPrune: external tool failed: ${err.message || err}`,
-						);
-						this.appendToOutput(String(err));
-						return false;
-					}
-				},
-			);
-
-			if (!run) return;
-		} else {
-			// No tool command configured: warn user we only read report
-			const open = "Open report file";
-			if (!fs.existsSync(defaultReport)) {
-				const pick = await vscode.window.showWarningMessage(
-					`DotNetPrune: No external tool configured and report not found at ${defaultReport}.`,
-					open,
-				);
-				if (pick === open) {
-					const uri = await vscode.window.showOpenDialog({
-						canSelectFiles: true,
-						openLabel: "Select dotnetprune report JSON",
+		// Hardcode the tool command to run the FindUnused analyzer
+		const toolCmd = `dotnet run --project FindUnused/FindUnused.csproj "${chosen.fsPath}" --report="${defaultReport}"`;
+		const run = await vscode.window.withProgress(
+			{
+				location: vscode.ProgressLocation.Notification,
+				title: "DotNetPrune: running analysis",
+				cancellable: false,
+			},
+			async (progress) => {
+				progress.report({ message: "Executing FindUnused analyzer..." });
+				try {
+					// Use shell execution
+					const { stdout, stderr } = await exec(toolCmd, {
+						cwd: vscode.workspace.rootPath,
 					});
-					if (!uri || uri.length === 0) return;
-					// set chosen report path to the selected file and load
-					await this.loadReportFromPath(uri[0].fsPath);
-					this._onDidChangeTreeData.fire();
-					return;
+					if (stderr && stderr.trim().length > 0) {
+						// non-fatal: surface to output channel
+						this.appendToOutput(stderr);
+					}
+					this.appendToOutput(stdout);
+					return true;
+				} catch (err: any) {
+					vscode.window.showErrorMessage(
+						`DotNetPrune: analysis failed: ${err.message || err}`,
+					);
+					this.appendToOutput(String(err));
+					return false;
 				}
-				return;
-			}
-		}
+			},
+		);
 
-		// after running (or if no tool), load the report
+		if (!run) return;
+
+		// Load the generated report
 		await this.loadReportFromPath(defaultReport);
-		this._onDidChangeTreeData.fire();
+		this._onDidChangeTreeData.fire(undefined);
 		vscode.window.showInformationMessage(
 			"DotNetPrune: analysis complete and report loaded.",
 		);
