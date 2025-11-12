@@ -1,8 +1,19 @@
 {
-  "name": "dotnetprune-vscode",
+  "name": "dotnet-prune-vscode",
   "displayName": "DotNetPrune",
-  "description": "Show DotNetPrune analysis results in VS Code Problems panel by reading the JSON report.",
+  "description": "Show DotNetPrune analysis results in VS Code Activity Bar by reading or generating the JSON report.",
   "version": "0.0.1",
+  "publisher": "nomad-in-code",
+  "icon": "./resources/icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chaluvadis/dotnet-prune"
+  },
+  "homepage": "https://github.com/chaluvadis/dotnet-prune",
+  "bugs": {
+    "url": "https://github.com/chaluvadis/dotnet-prune/issues"
+  },
   "engines": {
     "vscode": "^1.105.0"
   },
@@ -10,18 +21,29 @@
     "Linters"
   ],
   "activationEvents": [
-    "workspaceContains:**/dotnetprune-report.json"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "dotnetprune.refreshReport",
-        "title": "DotNetPrune: Refresh Report"
+        "command": "dotnetprune.refresh",
+        "title": "DotNetPrune: Refresh Findings"
+      },
+      {
+        "command": "dotnetprune.runAnalysis",
+        "title": "DotNetPrune: Run Analysis (external tool)"
       },
       {
         "command": "dotnetprune.openReport",
         "title": "DotNetPrune: Open Report File"
+      },
+      {
+        "command": "dotnetprune.clearFindings",
+        "title": "DotNetPrune: Clear Findings"
+      },
+      {
+        "command": "dotnetprune.openFinding",
+        "title": "DotNetPrune: Open Finding"
       }
     ],
     "configuration": {
@@ -33,27 +55,42 @@
           "default": "",
           "description": "Path to the DotNetPrune JSON report. Can be absolute or workspace-relative. If empty, extension will search for dotnetprune-report.json in the workspace root."
         },
+        "dotNetPrune.toolCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Optional external command to run DotNetPrune and produce the JSON report. Use ${solution}, ${reportPath}, and ${workspaceRoot} placeholders."
+        },
         "dotNetPrune.showOnlyHighConfidence": {
           "type": "boolean",
           "default": false,
-          "description": "If true, show only high-confidence findings (configurable from the report)."
+          "description": "If true, show only high-confidence findings (requires the report to include a confidence field)."
         }
       }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dotnetprune-views",
+          "title": "DotNetPrune",
+          "icon": "resources/gray.png"
+        }
+      ]
+    },
+    "views": {
+      "dotnetprune-views": [
+        {
+          "id": "dotnetprune-findings",
+          "name": "Findings",
+          "icon": "./resources/icon.png"
+        }
+      ]
     }
   },
   "scripts": {
-    "vscode:prepublish": "pnpm run package",
-    "compile": "pnpm run check-types && pnpm run lint && node esbuild.js",
-    "watch": "npm-run-all -p watch:*",
-    "watch:esbuild": "node esbuild.js --watch",
-    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "pnpm run check-types && pnpm run lint && node esbuild.js --production",
-    "compile-tests": "tsc -p . --outDir out",
-    "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
-    "check-types": "tsc --noEmit",
-    "lint": "eslint src",
-    "test": "vscode-test"
+    "compile": "node esbuild.js",
+    "clean":"rm -rf dotnet-prune-vscode-0.0.1.vsix",
+    "dotnet:publish": "dotnet publish ./FindUnused/FindUnused.csproj --output ./dist/FindUnused/",
+    "package": "pnpm clean && pnpm compile && pnpm dotnet:publish && vsce package"
   },
   "devDependencies": {
     "@types/vscode": "^1.105.0",

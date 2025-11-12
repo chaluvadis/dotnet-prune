@@ -1,10 +1,21 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
-import { exec } from "child_process";
-import { promisify } from "util";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as cp from "node:child_process";
+import { promisify } from "node:util";
 
-const execAsync = promisify(exec);
+const exec = promisify(cp.exec);
+
+// Helper function to get workspace root path safely using modern API
+function getWorkspaceRootPath(): string {
+  const workspaceFolders = vscode.workspace.workspaceFolders;
+  if (!workspaceFolders || workspaceFolders.length === 0) {
+    return ".";
+  }
+  return workspaceFolders[0].uri.fsPath;
+}
+
+let outputChannel: vscode.OutputChannel | undefined;
 
 type Finding = {
   Project: string;
@@ -15,558 +26,442 @@ type Finding = {
   SymbolName: string;
   Accessibility: string;
   Remarks: string;
-  // optional: confidence?: number;
+  confidence?: number;
 };
 
-type SolutionInfo = {
-  path: string;
-  type: 'sln' | 'slnx' | 'csproj';
-  name: string;
-};
+export function activate(context: vscode.ExtensionContext) {
+  const provider = new UnusedTreeProvider(context);
+  const treeView = vscode.window.createTreeView("dotnetprune-findings", {
+    treeDataProvider: provider,
+    showCollapseAll: true,
+  });
 
-const OUTPUT_CHANNEL_NAME = "DotNetPrune";
-const FINDUNUSED_EXE = "dotnet"; // We'll call the FindUnused.dll as a dotnet tool
-
-let diagnosticCollection: vscode.DiagnosticCollection;
-let outputChannel: vscode.OutputChannel;
-let fileWatchers: vscode.FileSystemWatcher[] = [];
-
-/**
- * Auto-discover solution files and run analysis
- */
-async function autoDiscoverAndAnalyzeSolutions(context: vscode.ExtensionContext) {
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  if (!workspaceFolder) {
-    outputChannel.appendLine("No workspace folder found for auto-discovery");
-    return;
-  }
-
-  outputChannel.show(true);
-  outputChannel.appendLine("🔍 Auto-discovering .NET solutions and projects...");
-
-  const solutions = await discoverSolutions(workspaceFolder.uri.fsPath);
-  
-  if (solutions.length === 0) {
-    outputChannel.appendLine("No .NET solution or project files found (.sln, .slnx, .csproj)");
-    return;
-  }
-
-  outputChannel.appendLine(`Found ${solutions.length} solution(s)/project(s):`);
-  for (const solution of solutions) {
-    outputChannel.appendLine(`  📁 ${solution.name} (${solution.type.toUpperCase()})`);
-  }
-
-  // Setup file watchers for auto-reanalysis
-  setupFileWatchers(context, solutions);
-
-  // Run analysis for each solution
-  for (const solution of solutions) {
-    outputChannel.appendLine(`\n🔄 Starting analysis for: ${solution.name}`);
-    await runAnalysisForSolution(solution);
-  }
-}
-
-/**
- * Discover all solution and project files in the workspace
- */
-async function discoverSolutions(workspacePath: string): Promise<SolutionInfo[]> {
-  const solutions: SolutionInfo[] = [];
-  
-  try {
-    // Find .sln files
-    const slnFiles = await vscode.workspace.findFiles(
-      new vscode.RelativePattern(workspacePath, "**/*.sln"),
-      "**/node_modules/**"
-    );
-    
-    for (const uri of slnFiles) {
-      const fileName = path.basename(uri.fsPath);
-      solutions.push({
-        path: uri.fsPath,
-        type: 'sln',
-        name: fileName
-      });
-    }
-
-    // Find .slnx files
-    const slnxFiles = await vscode.workspace.findFiles(
-      new vscode.RelativePattern(workspacePath, "**/*.slnx"),
-      "**/node_modules/**"
-    );
-    
-    for (const uri of slnxFiles) {
-      const fileName = path.basename(uri.fsPath);
-      solutions.push({
-        path: uri.fsPath,
-        type: 'slnx',
-        name: fileName
-      });
-    }
-
-    // Find .csproj files (single project files)
-    const csprojFiles = await vscode.workspace.findFiles(
-      new vscode.RelativePattern(workspacePath, "**/*.csproj"),
-      "**/node_modules/**"
-    );
-    
-    for (const uri of csprojFiles) {
-      const fileName = path.basename(uri.fsPath);
-      // Only add csproj if there's no corresponding sln file in the same directory
-      const dirName = path.dirname(uri.fsPath);
-      const slnInSameDir = path.join(dirName, path.basename(dirName) + '.sln');
-      const slnxInSameDir = path.join(dirName, path.basename(dirName) + '.slnx');
-      
-      if (!fs.existsSync(slnInSameDir) && !fs.existsSync(slnxInSameDir)) {
-        solutions.push({
-          path: uri.fsPath,
-          type: 'csproj',
-          name: fileName
-        });
+  context.subscriptions.push(
+    treeView,
+    vscode.commands.registerCommand("dotnetprune.refresh", () =>
+      provider.refresh()
+    ),
+    vscode.commands.registerCommand("dotnetprune.runAnalysis", async () => {
+      await provider.runAnalysisAndRefresh();
+    }),
+    vscode.commands.registerCommand("dotnetprune.openReport", async () => {
+      await provider.openReportFile();
+    }),
+    vscode.commands.registerCommand("dotnetprune.clearFindings", () =>
+      provider.clear()
+    ),
+    vscode.commands.registerCommand(
+      "dotnetprune.openFinding",
+      async (item: FindingTreeItem) => {
+        if (!item) return;
+        await provider.openFinding(item.finding);
       }
-    }
-  } catch (error) {
-    outputChannel.appendLine(`Error discovering solutions: ${error}`);
-  }
-
-  return solutions;
-}
-
-/**
- * Setup file watchers to trigger re-analysis when solution files change
- */
-function setupFileWatchers(context: vscode.ExtensionContext, solutions: SolutionInfo[]) {
-  // Clear existing watchers
-  fileWatchers.forEach(watcher => watcher.dispose());
-  fileWatchers = [];
-
-  for (const solution of solutions) {
-    // Watch for changes to solution/project files
-    const watcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(solution.path, "*"),
-      false, // ignoreCreate
-      true,  // ignoreChange
-      false  // ignoreDelete
-    );
-
-    watcher.onDidChange(async () => {
-      outputChannel.appendLine(`📝 Solution file changed: ${solution.name}. Re-running analysis...`);
-      await runAnalysisForSolution(solution);
-    });
-
-    // Watch for changes to source files in the solution
-    const sourceWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(path.dirname(solution.path), "**/*.{cs,razor,xaml}"),
-      false,
-      true,
-      false
-    );
-
-    sourceWatcher.onDidChange(async () => {
-      // Debounce re-analysis to avoid excessive runs
-      setTimeout(async () => {
-        outputChannel.appendLine(`📝 Source files changed in ${solution.name}. Re-running analysis...`);
-        await runAnalysisForSolution(solution);
-      }, 2000);
-    });
-
-    fileWatchers.push(watcher, sourceWatcher);
-    context.subscriptions.push(watcher, sourceWatcher);
-  }
-}
-
-/**
- * Run analysis for a specific solution
- */
-async function runAnalysisForSolution(solution: SolutionInfo) {
-  const findUnusedPath = resolveFindUnusedPath();
-  if (!findUnusedPath) {
-    outputChannel.appendLine(`❌ Could not find FindUnused.Console.dll for ${solution.name}`);
-    return;
-  }
-
-  const config = vscode.workspace.getConfiguration("dotNetPrune");
-  const includePublic = config.get<boolean>("includePublic") ?? true;
-  const includeInternal = config.get<boolean>("includeInternal") ?? true;
-  const excludeGenerated = config.get<boolean>("excludeGenerated") ?? true;
-
-  const reportPath = path.join(path.dirname(solution.path), "dotnetprune-report.json");
-
-  // Build command arguments
-  const args = [
-    findUnusedPath,
-    "--output", reportPath
-  ];
-
-  if (includePublic) {
-    args.push("--include-public");
-  } else {
-    args.push("--no-public");
-  }
-
-  if (includeInternal) {
-    args.push("--include-internal");
-  } else {
-    args.push("--no-internal");
-  }
-
-  if (excludeGenerated) {
-    args.push("--exclude-generated");
-  } else {
-    args.push("--no-generated");
-  }
-
-  // Add the specific solution/project path instead of workspace folder
-  args.push(solution.path);
-
-  try {
-    outputChannel.appendLine(`🚀 Running analysis for ${solution.name}...`);
-    outputChannel.appendLine(`Command: ${FINDUNUSED_EXE} ${args.join(" ")}`);
-    
-    const { stdout, stderr } = await execAsync(`${FINDUNUSED_EXE} ${args.join(" ")}`, {
-      timeout: 300000 // 5 minute timeout
-    });
-
-    if (stdout) {
-      outputChannel.appendLine(stdout);
-    }
-    if (stderr) {
-      outputChannel.appendLine(`Errors: ${stderr}`);
-    }
-
-    outputChannel.appendLine("✅ Analysis completed. Loading findings...");
-    
-    // Refresh findings with the new report
-    await refreshFindings();
-
-    outputChannel.appendLine(`✨ Analysis complete for ${solution.name}`);
-  } catch (error: any) {
-    outputChannel.appendLine(`❌ Error running analysis for ${solution.name}: ${error.message}`);
-    if (error.code === 'ETIMEDOUT') {
-      outputChannel.appendLine("⏰ Analysis timed out (5 minutes)");
-    }
-  }
-}
-
-export async function activate(context: vscode.ExtensionContext) {
-  diagnosticCollection =
-    vscode.languages.createDiagnosticCollection("dotnetprune");
-  outputChannel = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
-
-  context.subscriptions.push(diagnosticCollection, outputChannel);
-
-  const refreshCmd = vscode.commands.registerCommand(
-    "dotnetprune.refreshReport",
-    async () => {
-      await refreshFindings();
-    }
+    )
   );
 
-  const runAnalysisCmd = vscode.commands.registerCommand(
-    "dotnetprune.runAnalysis",
-    async () => {
-      await runAnalysis();
-    }
-  );
-
-  const openCmd = vscode.commands.registerCommand(
-    "dotnetprune.openReport",
-    async () => {
-      const reportPath = resolveReportPath();
-      if (!reportPath) {
-        vscode.window.showWarningMessage(
-          "DotNetPrune report path not configured and no dotnetprune-report.json found in the workspace root."
-        );
-        return;
-      }
-      const doc = await vscode.workspace.openTextDocument(reportPath);
-      await vscode.window.showTextDocument(doc);
-    }
-  );
-
-  context.subscriptions.push(refreshCmd, runAnalysisCmd, openCmd);
-
-  // Auto-discover and analyze solutions
-  await autoDiscoverAndAnalyzeSolutions(context);
+  // initial load
+  provider.refresh();
 }
 
 export function deactivate() {
-  diagnosticCollection?.clear();
-  diagnosticCollection?.dispose();
-  outputChannel?.dispose();
-  
-  // Clean up file watchers
-  fileWatchers.forEach(watcher => watcher.dispose());
-  fileWatchers = [];
+  if (outputChannel) {
+    outputChannel.dispose();
+    outputChannel = undefined;
+  }
 }
 
-function resolveReportPath(): string | undefined {
-  const config = vscode.workspace.getConfiguration("dotNetPrune");
-  let reportPath = config.get<string>("reportPath") ?? "";
+class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
+  private _onDidChangeTreeData: vscode.EventEmitter<TreeItemBase | undefined> =
+    new vscode.EventEmitter<TreeItemBase | undefined>();
+  readonly onDidChangeTreeData: vscode.Event<TreeItemBase | undefined> =
+    this._onDidChangeTreeData.event;
+  private findings: Finding[] = [];
+  private groupedByProject: Map<string, Map<string, Finding[]>> = new Map();
 
-  if (!reportPath || reportPath.trim().length === 0) {
-    // look for dotnetprune-report.json in workspace folders
-    const wf = vscode.workspace.workspaceFolders;
-    if (!wf || wf.length === 0) {
-      return undefined;
+  constructor(private context: vscode.ExtensionContext) {}
+
+  refresh(): void {
+    this.runAnalysisAndRefresh(true).catch((err) => {
+      vscode.window.showErrorMessage(
+        `DotNetPrune: Failed to run analysis: ${err}`
+      );
+    });
+  }
+
+  clear(): void {
+    this.findings = [];
+    this.groupedByProject.clear();
+    this._onDidChangeTreeData.fire(undefined);
+    vscode.window.showInformationMessage("DotNetPrune: findings cleared.");
+  }
+
+  async runAnalysisAndRefresh(silent: boolean = false): Promise<void> {
+    const config = vscode.workspace.getConfiguration("dotNetPrune");
+    const reportPathSetting = config.get<string>("reportPath") ?? "";
+
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      vscode.window.showErrorMessage(
+        "DotNetPrune: Open a workspace before running analysis."
+      );
+      return;
     }
-      for (const folder of wf) {
-        const candidate = path.join(folder.uri.fsPath, "dotnetprune-report.json");
-        if (fs.existsSync(candidate)) {
-          return candidate;
+
+    // discover solution/csproj files
+    const slnxCandidates = await vscode.workspace.findFiles(
+      "**/*.slnx",
+      "**/node_modules/**",
+      10
+    );
+    const slnCandidates = await vscode.workspace.findFiles(
+      "**/*.sln",
+      "**/node_modules/**",
+      10
+    );
+    const csprojCandidates = await vscode.workspace.findFiles(
+      "**/*.csproj",
+      "**/node_modules/**",
+      20
+    );
+
+    const allCandidates = [
+      ...slnxCandidates,
+      ...slnCandidates,
+      ...csprojCandidates,
+    ];
+    if (allCandidates.length === 0) {
+      vscode.window.showWarningMessage(
+        "DotNetPrune: No .sln/.slnx/.csproj found in workspace. Please add a project/solution to the workspace."
+      );
+      return;
+    }
+
+    let chosen = allCandidates[0];
+    if (allCandidates.length > 1 && !silent) {
+      const picks = allCandidates.map((u) => ({
+        label: path.relative(getWorkspaceRootPath(), u.fsPath),
+        uri: u,
+      }));
+      const sel = await vscode.window.showQuickPick(picks, {
+        placeHolder: "Select solution or project to analyze",
+      });
+      if (!sel) return;
+      chosen = sel.uri;
+    }
+
+    // resolve report path
+    const defaultReport =
+      reportPathSetting && reportPathSetting.trim() !== ""
+        ? reportPathSetting
+        : path.join(getWorkspaceRootPath(), "dotnetprune-report.json");
+
+    const dllPath = this.getDllPath();
+
+    // Hardcode the tool command to run the FindUnused analyzer
+    const toolCmd = `dotnet ${dllPath} "${chosen.fsPath}" --report "${defaultReport}"`;
+    console.log(`DotNetPrune:ToolCommand : ${toolCmd}`);
+    const run = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "DotNetPrune: running analysis",
+        cancellable: false,
+      },
+      async (progress) => {
+        progress.report({ message: "Executing FindUnused analyzer..." });
+        try {
+          // Use shell execution
+          const { stdout, stderr } = await exec(toolCmd, {
+            cwd: getWorkspaceRootPath(),
+          });
+          if (stderr && stderr.trim().length > 0) {
+            // non-fatal: surface to output channel
+            this.appendToOutput(stderr);
+          }
+          this.appendToOutput(stdout);
+          return true;
+        } catch (err: any) {
+          vscode.window.showErrorMessage(
+            `DotNetPrune: analysis failed: ${err.message || err}`
+          );
+          this.appendToOutput(String(err));
+          return false;
         }
       }
-      return undefined;
-    }
-
-  // If path is workspace-relative (starts without drive or slash), resolve relative to first workspace folder
-  if (!path.isAbsolute(reportPath)) {
-    const wf = vscode.workspace.workspaceFolders;
-    if (!wf || wf.length === 0) {
-      return path.resolve(reportPath);
-    }
-      return path.join(wf[0].uri.fsPath, reportPath);
-    }
-  return reportPath;
-}
-
-function resolveFindUnusedPath(): string | undefined {
-  const config = vscode.workspace.getConfiguration("dotNetPrune");
-  let findUnusedPath = config.get<string>("findUnusedPath") ?? "";
-
-  if (!findUnusedPath || findUnusedPath.trim().length === 0) {
-    // Look for FindUnused.dll relative to this extension
-    const extensionDir = path.join(__dirname, "..", "..", "FindUnused", "FindUnused", "bin", "Debug", "net10.0", "FindUnused.dll");
-    if (fs.existsSync(extensionDir)) {
-      return extensionDir;
-    }
-    
-    // Fall back to current workspace
-    const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (workspaceDir) {
-      const candidate = path.join(workspaceDir, "FindUnused", "FindUnused", "bin", "Debug", "net10.0", "FindUnused.dll");
-      if (fs.existsSync(candidate)) {
-        return candidate;
-      }
-    }
-    
-    return undefined;
-  }
-
-  // If path is workspace-relative, resolve relative to first workspace folder
-  if (!path.isAbsolute(findUnusedPath)) {
-    const wf = vscode.workspace.workspaceFolders;
-    if (!wf || wf.length === 0) {
-      return path.resolve(findUnusedPath);
-    }
-      return path.join(wf[0].uri.fsPath, findUnusedPath);
-    }
-  return findUnusedPath;
-}
-
-async function runAnalysis() {
-  outputChannel.clear();
-  outputChannel.show(true);
-
-  const findUnusedPath = resolveFindUnusedPath();
-  if (!findUnusedPath) {
-    outputChannel.appendLine("Error: Could not find FindUnused.Console.dll");
-    vscode.window.showErrorMessage(
-      "DotNetPrune: Could not find FindUnused.Console.dll. Configure dotNetPrune.findUnusedPath or ensure FindUnused is built."
     );
-    return;
+
+    if (!run) return;
+
+    // Load the generated report
+    await this.loadReportFromPath(defaultReport);
+    this._onDidChangeTreeData.fire(undefined);
+    vscode.window.showInformationMessage(
+      "DotNetPrune: analysis complete and report loaded."
+    );
   }
 
-  const config = vscode.workspace.getConfiguration("dotNetPrune");
-  const includePublic = config.get<boolean>("includePublic") ?? true;
-  const includeInternal = config.get<boolean>("includeInternal") ?? true;
-  const excludeGenerated = config.get<boolean>("excludeGenerated") ?? true;
-  
-  // Get workspace folder
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  if (!workspaceFolder) {
-    outputChannel.appendLine("Error: No workspace folder found");
-    vscode.window.showErrorMessage("DotNetPrune: No workspace folder found");
-    return;
+  async openReportFile(): Promise<void> {
+    const config = vscode.workspace.getConfiguration("dotNetPrune");
+    const reportPathSetting = config.get<string>("reportPath") ?? "";
+    const reportPath =
+      reportPathSetting && reportPathSetting.trim() !== ""
+        ? path.isAbsolute(reportPathSetting)
+          ? reportPathSetting
+          : path.join(getWorkspaceRootPath(), reportPathSetting)
+        : path.join(getWorkspaceRootPath(), "dotnetprune-report.json");
+
+    if (!fs.existsSync(reportPath)) {
+      vscode.window.showWarningMessage(
+        `DotNetPrune: report not found at ${reportPath}`
+      );
+      return;
+    }
+    const doc = await vscode.workspace.openTextDocument(reportPath);
+    await vscode.window.showTextDocument(doc, { preview: true });
   }
 
-  const reportPath = path.join(workspaceFolder.uri.fsPath, "dotnetprune-report.json");
+  private getDllPath(): string {
+    // The FindUnused.dll is packaged in dist/FindUnused/ directory
+    const extensionPath = this.context.extensionPath;
+    console.log(`DotNetPrune:extensionPath - ${extensionPath}`);
+    let dllPath = path.join(extensionPath, "FindUnused", "FindUnused.dll");
+    console.log(`DotNetPrune:dllPath - ${dllPath}`);
+    if (!fs.existsSync(dllPath)) {
+      // Fall back to old relative path structure for development
+      dllPath = path.join(".", "FindUnused", "FindUnused.dll");
+    }
 
-  // Build command arguments for the console application
-  const args = [
-    findUnusedPath,
-    "--output", reportPath
-  ];
-
-  if (includePublic) {
-    args.push("--include-public");
-  } else {
-    args.push("--no-public");
+    return dllPath;
   }
 
-  if (includeInternal) {
-    args.push("--include-internal");
-  } else {
-    args.push("--no-internal");
+  private async loadReport(): Promise<void> {
+    const config = vscode.workspace.getConfiguration("dotNetPrune");
+    const reportPathSetting = config.get<string>("reportPath") ?? "";
+    const reportPath =
+      reportPathSetting && reportPathSetting.trim() !== ""
+        ? path.isAbsolute(reportPathSetting)
+          ? reportPathSetting
+          : path.join(getWorkspaceRootPath(), reportPathSetting)
+        : path.join(getWorkspaceRootPath(), "dotnetprune-report.json");
+
+    await this.loadReportFromPath(reportPath);
   }
 
-  if (excludeGenerated) {
-    args.push("--exclude-generated");
-  } else {
-    args.push("--no-generated");
-  }
+  private async loadReportFromPath(reportPath: string): Promise<void> {
+    if (!fs.existsSync(reportPath)) {
+      this.findings = [];
+      this.groupedByProject.clear();
+      vscode.window.showInformationMessage(
+        `DotNetPrune: report not found at ${reportPath}`
+      );
+      return;
+    }
 
-  // Add workspace folder as target
-  args.push(workspaceFolder.uri.fsPath);
+    let raw = "";
+    try {
+      raw = fs.readFileSync(reportPath, "utf8");
+    } catch (err) {
+      throw new Error(`Failed to read report: ${err}`);
+    }
 
-  try {
-    outputChannel.appendLine(`Running FindUnused analysis...`);
-    outputChannel.appendLine(`Command: ${FINDUNUSED_EXE} ${args.join(" ")}`);
-    
-    const { stdout, stderr } = await execAsync(`${FINDUNUSED_EXE} ${args.join(" ")}`, {
-      timeout: 300000 // 5 minute timeout
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      throw new Error(`Failed to parse JSON: ${err}`);
+    }
+
+    if (!Array.isArray(parsed)) {
+      throw new Error("Report JSON must be an array of findings.");
+    }
+
+    // Map to internal Finding type and normalize paths
+    const mapped: Finding[] = parsed.map((p: any) => {
+      const filePath = p.FilePath ?? p.filePath ?? "";
+      const resolved = path.isAbsolute(filePath)
+        ? filePath
+        : path.join(getWorkspaceRootPath(), filePath);
+      return {
+        Project: p.Project ?? p.project ?? "",
+        FilePath: resolved,
+        Line: typeof p.Line === "number" ? p.Line : p.line ?? 1,
+        SymbolKind: p.SymbolKind ?? p.symbolKind ?? "",
+        ContainingType: p.ContainingType ?? p.containingType ?? "",
+        SymbolName: p.SymbolName ?? p.symbolName ?? "",
+        Accessibility: p.Accessibility ?? p.accessibility ?? "",
+        Remarks: p.Remarks ?? p.remarks ?? "",
+        confidence: typeof p.confidence === "number" ? p.confidence : undefined,
+      };
     });
 
-    if (stdout) {
-      outputChannel.appendLine(stdout);
+    this.findings = mapped;
+    this.groupedByProject.clear();
+
+    for (const f of this.findings) {
+      const proj = f.Project || "Unknown";
+      if (!this.groupedByProject.has(proj))
+        this.groupedByProject.set(proj, new Map());
+      const byFile = this.groupedByProject.get(proj)!;
+      const fileKey = f.FilePath || "(generated)";
+      if (!byFile.has(fileKey)) byFile.set(fileKey, []);
+      byFile.get(fileKey)!.push(f);
     }
-    if (stderr) {
-      outputChannel.appendLine(`Errors: ${stderr}`);
+  }
+
+  // open a finding in editor and reveal the line
+  async openFinding(f: Finding) {
+    if (!f || !f.FilePath) {
+      vscode.window.showWarningMessage(
+        "DotNetPrune: finding has no file path."
+      );
+      return;
+    }
+    try {
+      const doc = await vscode.workspace.openTextDocument(f.FilePath);
+      const editor = await vscode.window.showTextDocument(doc, {
+        preview: false,
+      });
+      const line = Math.max(0, f.Line > 0 ? f.Line - 1 : 0);
+      const pos = new vscode.Position(line, 0);
+      editor.revealRange(
+        new vscode.Range(pos, pos),
+        vscode.TextEditorRevealType.InCenter
+      );
+      // optionally set selection to the line
+      editor.selection = new vscode.Selection(pos, pos);
+    } catch (err: any) {
+      vscode.window.showErrorMessage(
+        `DotNetPrune: failed to open file ${f.FilePath}: ${err.message || err}`
+      );
+    }
+  }
+
+  private appendToOutput(text: string) {
+    if (!outputChannel) {
+      outputChannel = vscode.window.createOutputChannel("DotNetPrune");
+    }
+    outputChannel.appendLine(text);
+    outputChannel.show(true);
+  }
+
+  // TreeDataProvider implementation
+
+  getTreeItem(element: TreeItemBase): vscode.TreeItem {
+    return element;
+  }
+
+  getChildren(element?: TreeItemBase): Thenable<TreeItemBase[]> {
+    if (!element) {
+      // top-level: projects
+      const items = Array.from(this.groupedByProject.keys()).map((proj) => {
+        const item = new ProjectTreeItem(
+          proj,
+          vscode.TreeItemCollapsibleState.Collapsed
+        );
+        return item;
+      });
+      // if no findings, show hint
+      if (items.length === 0) {
+        return Promise.resolve([
+          new MessageTreeItem(
+            "No findings. Run analysis or place dotnetprune-report.json in the workspace root.",
+            vscode.TreeItemCollapsibleState.None
+          ),
+        ]);
+      }
+      return Promise.resolve(items);
     }
 
-    outputChannel.appendLine("Analysis completed. Loading findings...");
-    
-    // After analysis, load the findings
-    await refreshFindings();
-
-    vscode.window.showInformationMessage("DotNetPrune: Analysis completed successfully");
-  } catch (error: any) {
-    outputChannel.appendLine(`Error running analysis: ${error.message}`);
-    if (error.code === 'ETIMEDOUT') {
-      vscode.window.showErrorMessage("DotNetPrune: Analysis timed out (5 minutes)");
-    } else {
-      vscode.window.showErrorMessage(`DotNetPrune: Analysis failed: ${error.message}`);
+    if (element instanceof ProjectTreeItem) {
+      const proj = element.label as string;
+      const files = this.groupedByProject.get(proj);
+      if (!files) return Promise.resolve([]);
+      const fileItems: TreeItemBase[] = [];
+      for (const [filePath, findings] of files) {
+        const fileLabel = path.relative(getWorkspaceRootPath(), filePath);
+        const fileItem = new FileTreeItem(
+          fileLabel,
+          filePath,
+          vscode.TreeItemCollapsibleState.Collapsed
+        );
+        fileItems.push(fileItem);
+      }
+      return Promise.resolve(fileItems);
     }
+
+    if (element instanceof FileTreeItem) {
+      const filePath = element.filePath;
+      // find entries
+      const projEntry = Array.from(this.groupedByProject.entries()).find(
+        ([, files]) => files.has(filePath)
+      );
+      if (!projEntry) return Promise.resolve([]);
+      const findings = projEntry[1].get(filePath) || [];
+      const items = findings.map((f) => {
+        const label = `${f.SymbolKind}: ${f.SymbolName}`;
+        const ti = new FindingTreeItem(
+          label,
+          f,
+          vscode.TreeItemCollapsibleState.None
+        );
+        ti.command = {
+          command: "dotnetprune.openFinding",
+          title: "Open Finding",
+          arguments: [ti],
+        };
+        ti.tooltip = `${f.ContainingType} — ${f.Remarks}`;
+        ti.description = `Ln ${f.Line} (${f.Accessibility})`;
+        return ti;
+      });
+      return Promise.resolve(items);
+    }
+
+    return Promise.resolve([]);
   }
 }
 
-async function refreshFindings() {
-  diagnosticCollection.clear();
-  outputChannel.clear();
-  outputChannel.show(true);
+abstract class TreeItemBase extends vscode.TreeItem {}
 
-  const reportPath = resolveReportPath();
-  if (!reportPath) {
-    outputChannel.appendLine("No DotNetPrune report found or configured.");
-    vscode.window.showInformationMessage(
-      "DotNetPrune: no report found. Configure dotNetPrune.reportPath or place dotnetprune-report.json in workspace root."
-    );
-    return;
+class MessageTreeItem extends TreeItemBase {
+  constructor(message: string, state: vscode.TreeItemCollapsibleState) {
+    super(message, state);
+    this.contextValue = "message";
+    this.iconPath = new vscode.ThemeIcon("info");
   }
+}
 
-  outputChannel.appendLine(`Loading DotNetPrune report: ${reportPath}`);
-  let raw: string;
-  try {
-    raw = fs.readFileSync(reportPath, "utf8");
-  } catch (err) {
-    outputChannel.appendLine(`Failed to read report: ${err}`);
-    vscode.window.showErrorMessage(
-      `DotNetPrune: failed to read report: ${err}`
-    );
-    return;
+class ProjectTreeItem extends TreeItemBase {
+  constructor(
+    public readonly label: string,
+    state: vscode.TreeItemCollapsibleState
+  ) {
+    super(label, state);
+    this.contextValue = "project";
+    this.iconPath = new vscode.ThemeIcon("project");
   }
+}
 
-  let findings: Finding[] = [];
-  try {
-    findings = JSON.parse(raw) as Finding[];
-  } catch (err) {
-    outputChannel.appendLine(`Failed to parse report JSON: ${err}`);
-    vscode.window.showErrorMessage(
-      "DotNetPrune: failed to parse report JSON. Check the report format."
-    );
-    return;
+class FileTreeItem extends TreeItemBase {
+  constructor(
+    public readonly label: string,
+    public readonly filePath: string,
+    state: vscode.TreeItemCollapsibleState
+  ) {
+    super(label, state);
+    this.contextValue = "file";
+    this.iconPath = new vscode.ThemeIcon("file");
+    // open on double click? handled by child items commands
   }
+}
 
-  // Optionally apply showOnlyHighConfidence if report contains confidence field (backwards-compatible)
-  const config = vscode.workspace.getConfiguration("dotNetPrune");
-  const onlyHigh = config.get<boolean>("showOnlyHighConfidence") ?? false;
-
-  outputChannel.appendLine(
-    `Findings loaded: ${findings.length}. Applying filters: showOnlyHighConfidence=${onlyHigh}`
-  );
-
-  // group diagnostics by file
-  const diagnosticsByFile = new Map<string, vscode.Diagnostic[]>();
-
-  for (const f of findings) {
-    // optionally skip if finding contains 'confidence' and onlyHigh set (report format dependent)
-    if (onlyHigh && (f as any).confidence !== undefined) {
-      const conf = (f as any).confidence;
-      if (conf < 0.75) {
-        continue;
-      }
-    }
-
-    // Map report file path to workspace file
-    let filePath = f.FilePath ?? "";
-    if (!path.isAbsolute(filePath)) {
-      // if file path is relative, try to resolve from workspace folders (project may have provided project.Name)
-      const wf = vscode.workspace.workspaceFolders;
-      if (wf && wf.length > 0) {
-        // try each folder
-        let resolved: string | undefined;
-        for (const folder of wf) {
-          const candidate = path.join(folder.uri.fsPath, filePath);
-          if (fs.existsSync(candidate)) {
-            resolved = candidate;
-            break;
-          }
-        }
-        if (resolved) {
-          filePath = resolved;
-        }
-      }
-    }
-
-    if (!fs.existsSync(filePath)) {
-      // skip missing files but log
-      outputChannel.appendLine(
-        `Warning: file not found for finding: ${filePath} (symbol ${f.SymbolName})`
-      );
-      continue;
-    }
-
-    // Line numbers in report are 1-based; clamp to file length
-    const line0 = Math.max(0, f.Line > 0 ? f.Line - 1 : 0);
-    const diagnosticRange = new vscode.Range(
-      new vscode.Position(line0, 0),
-      new vscode.Position(line0, 400)
-    );
-    const message = `${f.SymbolKind} '${f.SymbolName}' (${f.Accessibility}) — ${f.Remarks}`;
-    // severity heuristic: private/internal->Information, public->Warning
-    const severity =
-      f.Accessibility?.toLowerCase() === "public"
-        ? vscode.DiagnosticSeverity.Warning
-        : vscode.DiagnosticSeverity.Information;
-    const diag = new vscode.Diagnostic(diagnosticRange, message, severity);
-    diag.source = "DotNetPrune";
-    diag.code = "dotnet-prune";
-
-    const uri = vscode.Uri.file(filePath).toString();
-    const arr = diagnosticsByFile.get(uri) ?? [];
-    arr.push(diag);
-    diagnosticsByFile.set(uri, arr);
+class FindingTreeItem extends TreeItemBase {
+  constructor(
+    public readonly label: string,
+    public readonly finding: Finding,
+    state: vscode.TreeItemCollapsibleState
+  ) {
+    super(label, state);
+    this.contextValue = "finding";
+    this.iconPath = new vscode.ThemeIcon("warning"); // severity-neutral; you can change based on accessibility/confidence
+    // The command to open the finding is set by the provider
   }
-
-  // publish diagnostics
-  for (const [uriStr, diags] of diagnosticsByFile) {
-    const uri = vscode.Uri.parse(uriStr);
-    diagnosticCollection.set(uri, diags);
-  }
-
-  outputChannel.appendLine(
-    `Diagnostics published for ${diagnosticsByFile.size} files.`
-  );
-  vscode.window.showInformationMessage(
-    `DotNetPrune: loaded ${findings.length} findings, published diagnostics for ${diagnosticsByFile.size} files.`
-  );
 }
