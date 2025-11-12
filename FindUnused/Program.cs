@@ -129,11 +129,16 @@ public class FindUnusedAnalyzer
 
     private static async Task WriteReportAsync(List<Finding> findings, string? reportPath, IProgress<string>? progress)
     {
+        var json = JsonSerializer.Serialize(findings, GetOptions());
+
+        // Always output JSON to stdout for extension consumption
+        Console.WriteLine(json);
+
+        // Optionally write to file if reportPath provided (for backward compatibility)
         if (!string.IsNullOrEmpty(reportPath))
         {
             try
             {
-                var json = JsonSerializer.Serialize(findings, GetOptions());
                 await File.WriteAllTextAsync(reportPath, json);
                 progress?.Report($"Report written to {reportPath}");
             }
@@ -141,15 +146,6 @@ public class FindUnusedAnalyzer
             {
                 progress?.Report($"Failed to write report: {ex.Message}");
             }
-        }
-        else
-        {
-            progress?.Report("\nFindings (sample):");
-            foreach (var f in findings.Take(10))
-            {
-                progress?.Report($"{f.Project} | {f.SymbolKind} | {f.ContainingType} | {f.SymbolName} | {f.Accessibility} | {f.FilePath}:{f.Line} => {f.Remarks}");
-            }
-            progress?.Report("Done.");
         }
     }
 
