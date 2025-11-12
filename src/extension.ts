@@ -1,10 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as cp from "node:child_process";
-import { promisify } from "node:util";
-
-const exec = promisify(cp.exec);
+import { spawn } from "node:child_process";
 
 // Helper function to get workspace root path safely using modern API
 function getWorkspaceRootPath(): string {
@@ -149,6 +146,15 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       chosen = sel.uri;
     }
 
+    // Validate and sanitize the chosen file path
+    const chosenPath = chosen.fsPath;
+    if (!this.isValidFilePath(chosenPath)) {
+      vscode.window.showErrorMessage(
+        "DotNetPrune: Invalid file path selected for analysis."
+      );
+      return;
+    }
+
     // resolve report path
     const defaultReport =
       reportPathSetting && reportPathSetting.trim() !== ""
@@ -156,47 +162,114 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         : path.join(getWorkspaceRootPath(), "dotnetprune-report.json");
 
     const dllPath = this.getDllPath();
+    if (!dllPath || !fs.existsSync(dllPath)) {
+      vscode.window.showErrorMessage(
+        "DotNetPrune: FindUnused.dll not found. Please ensure the extension is properly installed."
+      );
+      return;
+    }
 
-    // Hardcode the tool command to run the FindUnused analyzer
-    const toolCmd = `dotnet ${dllPath} "${chosen.fsPath}" --report "${defaultReport}"`;
-    console.log(`DotNetPrune:ToolCommand : ${toolCmd}`);
+    // Use spawn for better security and control
     const run = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
         title: "DotNetPrune: running analysis",
-        cancellable: false,
+        cancellable: true,
       },
-      async (progress) => {
+      async (progress, token) => {
         progress.report({ message: "Executing FindUnused analyzer..." });
-        try {
-          // Use shell execution
-          const { stdout, stderr } = await exec(toolCmd, {
+
+        return new Promise<boolean>((resolve) => {
+          const child = spawn('dotnet', [dllPath, chosenPath], {
             cwd: getWorkspaceRootPath(),
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 300000, // 5 minute timeout
           });
-          if (stderr && stderr.trim().length > 0) {
-            // non-fatal: surface to output channel
-            this.appendToOutput(stderr);
-          }
-          this.appendToOutput(stdout);
-          return true;
-        } catch (err: any) {
-          vscode.window.showErrorMessage(
-            `DotNetPrune: analysis failed: ${err.message || err}`
-          );
-          this.appendToOutput(String(err));
-          return false;
-        }
+
+          let stdout = '';
+          let stderr = '';
+
+          // Handle cancellation
+          token.onCancellationRequested(() => {
+            child.kill();
+            resolve(false);
+          });
+
+          child.stdout.on('data', (data: Buffer) => {
+            stdout += data.toString();
+          });
+
+          child.stderr.on('data', (data: Buffer) => {
+            stderr += data.toString();
+          });
+
+          child.on('close', async (code: number) => {
+            try {
+              // Check exit code - code 1 means findings detected (success), other codes are errors
+              if (code !== 0 && code !== 1) {
+                throw new Error(`Analyzer exited with code ${code}`);
+              }
+
+              // Log stderr if present
+              if (stderr && stderr.trim().length > 0) {
+                this.appendToOutput(stderr);
+              }
+
+              // Parse JSON from stdout - expect clean JSON array
+              const trimmedStdout = stdout.trim();
+              if (!trimmedStdout) {
+                throw new Error('No output received from analyzer');
+              }
+
+              // Try to parse as JSON directly
+              let findings: any[];
+              try {
+                findings = JSON.parse(trimmedStdout);
+              } catch (parseError) {
+                // Fallback: try to extract JSON array if wrapped in other text
+                const jsonMatch = trimmedStdout.match(/(\[[\s\S]*\])/);
+                if (!jsonMatch) {
+                  throw new Error(`Invalid JSON output from analyzer: ${parseError}`);
+                }
+                findings = JSON.parse(jsonMatch[1]);
+              }
+
+              // Validate findings structure
+              if (!Array.isArray(findings)) {
+                throw new Error('Analyzer output is not a valid findings array');
+              }
+
+              await this.loadFindingsFromJson(findings);
+              resolve(true);
+
+            } catch (error: any) {
+              const errorMsg = `Failed to parse analyzer output: ${error.message}`;
+              vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`);
+              this.appendToOutput(errorMsg);
+              this.appendToOutput(`Raw stdout: ${stdout.substring(0, 1000)}`);
+              resolve(false);
+            }
+          });
+
+          child.on('error', (error: Error) => {
+            const errorMsg = `Failed to execute analyzer: ${error.message}`;
+            vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`);
+            this.appendToOutput(errorMsg);
+            resolve(false);
+          });
+        });
       }
     );
 
     if (!run) return;
 
-    // Load the generated report
-    await this.loadReportFromPath(defaultReport);
     this._onDidChangeTreeData.fire(undefined);
     vscode.window.showInformationMessage(
-      "DotNetPrune: analysis complete and report loaded."
+      "DotNetPrune: analysis complete and data loaded."
     );
+
+    // Open the DotNetPrune view to show the findings
+    vscode.commands.executeCommand('workbench.view.dotnetprune-views');
   }
 
   async openReportFile(): Promise<void> {
@@ -220,62 +293,59 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   private getDllPath(): string {
-    // The FindUnused.dll is packaged in dist/FindUnused/ directory
+    // The FindUnused.dll is packaged in the extension directory
     const extensionPath = this.context.extensionPath;
-    console.log(`DotNetPrune:extensionPath - ${extensionPath}`);
-    let dllPath = path.join(extensionPath, "FindUnused", "FindUnused.dll");
-    console.log(`DotNetPrune:dllPath - ${dllPath}`);
-    if (!fs.existsSync(dllPath)) {
-      // Fall back to old relative path structure for development
-      dllPath = path.join(".", "FindUnused", "FindUnused.dll");
+    const dllPath = path.join(extensionPath, "FindUnused", "FindUnused.dll");
+
+    if (fs.existsSync(dllPath)) {
+      return dllPath;
     }
 
-    return dllPath;
+    // Development fallback - check if we're in development mode
+    const devPath = path.join(extensionPath, "FindUnused", "FindUnused.dll");
+    if (fs.existsSync(devPath)) {
+      return devPath;
+    }
+
+    return ""; // Return empty string to indicate not found
   }
 
-  private async loadReport(): Promise<void> {
-    const config = vscode.workspace.getConfiguration("dotNetPrune");
-    const reportPathSetting = config.get<string>("reportPath") ?? "";
-    const reportPath =
-      reportPathSetting && reportPathSetting.trim() !== ""
-        ? path.isAbsolute(reportPathSetting)
-          ? reportPathSetting
-          : path.join(getWorkspaceRootPath(), reportPathSetting)
-        : path.join(getWorkspaceRootPath(), "dotnetprune-report.json");
+  private isValidFilePath(filePath: string): boolean {
+    try {
+      // Basic validation: ensure it's an absolute path and exists
+      if (!path.isAbsolute(filePath)) {
+        return false;
+      }
 
-    await this.loadReportFromPath(reportPath);
+      // Check if file exists
+      if (!fs.existsSync(filePath)) {
+        return false;
+      }
+
+      // Ensure it's within the workspace
+      const workspaceRoot = getWorkspaceRootPath();
+      const relativePath = path.relative(workspaceRoot, filePath);
+      if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+        return false; // Path is outside workspace
+      }
+
+      // Check file extension
+      const ext = path.extname(filePath).toLowerCase();
+      return ['.sln', '.slnx', '.csproj'].includes(ext);
+
+    } catch (error) {
+      return false;
+    }
   }
 
-  private async loadReportFromPath(reportPath: string): Promise<void> {
-    if (!fs.existsSync(reportPath)) {
-      this.findings = [];
-      this.groupedByProject.clear();
-      vscode.window.showInformationMessage(
-        `DotNetPrune: report not found at ${reportPath}`
-      );
-      return;
-    }
 
-    let raw = "";
-    try {
-      raw = fs.readFileSync(reportPath, "utf8");
-    } catch (err) {
-      throw new Error(`Failed to read report: ${err}`);
-    }
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      throw new Error(`Failed to parse JSON: ${err}`);
-    }
-
-    if (!Array.isArray(parsed)) {
-      throw new Error("Report JSON must be an array of findings.");
+  private async loadFindingsFromJson(findingsJson: any[]): Promise<void> {
+    if (!Array.isArray(findingsJson)) {
+      throw new Error("Findings JSON must be an array.");
     }
 
     // Map to internal Finding type and normalize paths
-    const mapped: Finding[] = parsed.map((p: any) => {
+    const mapped: Finding[] = findingsJson.map((p: any) => {
       const filePath = p.FilePath ?? p.filePath ?? "";
       const resolved = path.isAbsolute(filePath)
         ? filePath
@@ -363,7 +433,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       if (items.length === 0) {
         return Promise.resolve([
           new MessageTreeItem(
-            "No findings. Run analysis or place dotnetprune-report.json in the workspace root.",
+            "No findings. Run analysis to scan for unused code.",
             vscode.TreeItemCollapsibleState.None
           ),
         ]);
