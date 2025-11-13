@@ -9,6 +9,7 @@ DotNetPrune analyzes candidate unused code (methods, parameters, fields, propert
 - **Direct Analysis Integration**: Runs the FindUnused analyzer directly from VS Code
 - **Interactive Navigation**: Click on findings to open source files and highlight relevant lines
 - **Solution-Aware Organization**: Automatically discovers and organizes findings by solution structure
+- **Copy File Path**: Right-click context menu on file nodes to copy file paths to clipboard
 
 ## How It Works
 
@@ -18,10 +19,10 @@ DotNetPrune analyzes candidate unused code (methods, parameters, fields, propert
    ```
    📁 MySolution.sln
      📁 MyProject
-       📁 Program.cs
+       📁 Program.cs (right-click to copy path)
          ⚠️ unused method: CalculateSum
          ⚠️ unused field: _cachedData
-       📁 Utils.cs
+       📁 Utils.cs (right-click to copy path)
          ⚠️ unused class: HelperClass
    ```
 4. **File Navigation**: Direct navigation to unused code locations
@@ -39,7 +40,7 @@ DotNetPrune analyzes candidate unused code (methods, parameters, fields, propert
 
 - **Level 1**: Solutions (.sln/.slnx files)
 - **Level 2**: Projects within each solution
-- **Level 3**: Source files (.cs) within each project  
+- **Level 3**: Source files (.cs) within each project - right-click to copy file path
 - **Level 4**: Individual unused code findings
 
 ### Commands
@@ -48,6 +49,7 @@ DotNetPrune analyzes candidate unused code (methods, parameters, fields, propert
 - **DotNetPrune: Run Analysis**: Execute the FindUnused analyzer
 - **DotNetPrune: Clear Findings**: Clear all displayed findings
 - **DotNetPrune: Open Finding**: Navigate to the finding location in source code
+- **Copy File Path**: Right-click on file nodes in the tree view to copy file paths to clipboard
 
 ## Setup
 
@@ -103,6 +105,5 @@ dotnet run --project FindUnused/FindUnused.csproj -- /path/to/YourSolution.sln
 ## Next Steps
 
 - Add code actions to mark findings as ignored or suppressed
-- Integrate with CI/CD pipelines for automated unused code detection
 - Add confidence scoring and filtering options
 - Support for additional .NET project types
