@@ -293,21 +293,8 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   private getDllPath(): string {
-    // The FindUnused.dll is packaged in the extension directory
     const extensionPath = this.context.extensionPath;
-    const dllPath = path.join(extensionPath, "FindUnused", "FindUnused.dll");
-
-    if (fs.existsSync(dllPath)) {
-      return dllPath;
-    }
-
-    // Development fallback - check if we're in development mode
-    const devPath = path.join(extensionPath, "FindUnused", "FindUnused.dll");
-    if (fs.existsSync(devPath)) {
-      return devPath;
-    }
-
-    return ""; // Return empty string to indicate not found
+    return path.join(extensionPath, "dist", "FindUnused", "FindUnused.dll");
   }
 
   private isValidFilePath(filePath: string): boolean {
