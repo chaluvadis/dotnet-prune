@@ -1,4 +1,4 @@
-namespace FindUnusedConsole;
+namespace FindUnused;
 
 /// <summary>
 /// Result object for analysis operations
@@ -105,12 +105,6 @@ public class FindUnusedAnalyzer
                     findings.AddRange(arr);
                 }
             }
-            if (!string.IsNullOrWhiteSpace(targetPath))
-            {
-                // Finalize analysis
-                progress?.Report($"\nAnalysis complete. Findings: {findings.Count}");
-                await WriteReportAsync(findings);
-            }
             return new AnalysisResult
             {
                 Success = true,
@@ -127,15 +121,6 @@ public class FindUnusedAnalyzer
             };
         }
     }
-
-    private static async Task WriteReportAsync(List<Finding> findings)
-    {
-        var json = JsonSerializer.Serialize(findings, GetOptions());
-
-        // Output JSON to stdout for extension consumption
-        Console.WriteLine(json);
-    }
-
     private static bool IsReferenceInSolutionSource(Location loc, Solution solution, HashSet<ProjectId> solutionProjectIds)
     {
         if (loc == null || !loc.IsInSource) return false;
@@ -358,6 +343,16 @@ public class FindUnusedAnalyzer
         if (acc == Accessibility.Protected || acc == Accessibility.ProtectedOrInternal) return (findings, referenced);
         var entry = compilation.GetEntryPoint(CancellationToken.None);
         if (entry != null && SymbolEqualityComparer.Default.Equals(entry, method)) return (findings, referenced);
+        // Skip API controller methods and test methods as they are entry points and should not be considered unused
+        if (IsEntryPointMethod(method, type))
+        {
+            return (findings, false); // Return referenced=true to indicate it's an entry point
+        }
+
+        if (IsTestMethod(method, type))
+        {
+            return (findings, false); // Return referenced=true to indicate it's a test method
+        }
         var defLoc = GetSourceLocation(method);
         if (excludeGenerated && defLoc != null && IsGenerated(defLoc.SourceTree)) return (findings, referenced);
         // Find references across the solution
@@ -892,6 +887,124 @@ public class FindUnusedAnalyzer
                 }
             }
         }
+        return false;
+    }
+    /// <summary>
+    /// Check if a method is in an API controller class
+    /// </summary>
+    private static bool IsApiControllerMethod(INamedTypeSymbol containingType)
+    {
+        if (containingType == null) return false;
+
+        // Check if the class inherits from Controller, ControllerBase, or has [ApiController] attribute
+        var baseType = containingType.BaseType;
+        while (baseType != null && baseType.SpecialType != SpecialType.System_Object)
+        {
+            var baseTypeName = baseType.Name.ToLowerInvariant();
+            if (baseTypeName == "controller" ||
+                baseTypeName == "controllerbase" ||
+                baseTypeName == "apicontroller")
+            {
+                return true;
+            }
+            baseType = baseType.BaseType;
+        }
+
+        // Check for [ApiController] attribute
+        var apiControllerAttribute = containingType.GetAttributes()
+            .FirstOrDefault(attr => attr.AttributeClass?.Name.Equals("ApiControllerAttribute", StringComparison.OrdinalIgnoreCase) == true);
+
+        if (apiControllerAttribute != null) return true;
+
+        // Check for controller-related HTTP attributes on methods (indicates it's likely a controller)
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a method is a test method
+    /// </summary>
+    private static bool IsTestMethod(IMethodSymbol method, INamedTypeSymbol containingType)
+    {
+        if (method == null) return false;
+
+        // Check for common test framework attributes
+        var testAttributes = new[]
+        {
+            "TestAttribute", "FactAttribute", "TheoryAttribute", "TestMethodAttribute",
+            "TestCaseAttribute", "TestCaseSourceAttribute", "InlineDataAttribute",
+            "ClassDataAttribute", "DynamicDataAttribute"
+        };
+
+        foreach (var attr in method.GetAttributes())
+        {
+            var attrName = attr.AttributeClass?.Name;
+            if (attrName != null && testAttributes.Any(testAttr =>
+                attrName.Equals(testAttr, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        // Check if containing class has test-related attributes
+        if (containingType != null)
+        {
+            var testClassAttributes = new[]
+            {
+                "TestClassAttribute", "TestFixtureAttribute", "TestCategoryAttribute"
+            };
+
+            foreach (var attr in containingType.GetAttributes())
+            {
+                var attrName = attr.AttributeClass?.Name;
+                if (attrName != null && testClassAttributes.Any(testAttr =>
+                    attrName.Equals(testAttr, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return true;
+                }
+            }
+
+            // Check if class name ends with "Test" or "Tests"
+            var className = containingType.Name;
+            if (className.EndsWith("Test", StringComparison.OrdinalIgnoreCase) ||
+                className.EndsWith("Tests", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a method is an entry point (like a controller action)
+    /// </summary>
+    private static bool IsEntryPointMethod(IMethodSymbol method, INamedTypeSymbol containingType)
+    {
+        if (method == null) return false;
+
+        // API Controller methods are entry points
+        if (IsApiControllerMethod(containingType))
+        {
+            return true;
+        }
+
+        // Check for HTTP-related attributes that indicate web API endpoints
+        var httpAttributes = new[]
+        {
+            "HttpGetAttribute", "HttpPostAttribute", "HttpPutAttribute", "HttpDeleteAttribute",
+            "HttpPatchAttribute", "RouteAttribute", "AcceptVerbsAttribute"
+        };
+
+        foreach (var attr in method.GetAttributes())
+        {
+            var attrName = attr.AttributeClass?.Name;
+            if (attrName != null && httpAttributes.Any(httpAttr =>
+                attrName.Equals(httpAttr, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 }
