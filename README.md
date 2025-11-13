@@ -1,54 +1,108 @@
-# DotNetPrune
+# DotNet Prune
 
-DotNetPrune analyze candidate unused code (methods, parameters, fields, properties, types) in .NET solutions using Roslyn
-and produces a JSON report that can be displayed in VS Code via the DotNetPrune extension.
-
-Usage (DotNetPrune analyzer)
-
-- Edit src/FindUnused/Program.cs constants to point TargetPath and ReportPath, or run via CLI with a project argument.
-- Build & run:
-  dotnet restore
-  dotnet run --project src/FindUnused -- /path/to/YourSolution.sln --report=dotnetprune-report.json
-
-Report format
-DotNetPrune writes a JSON array of findings. Each finding should include:
-
-- Project (string)
-- FilePath (string) — absolute or workspace-relative path to the source file
-- Line (number) — 1-based
-- SymbolKind (string) — "Method", "Parameter", "Type", etc.
-- ContainingType (string)
-- SymbolName (string)
-- Accessibility (string)
-- Remarks (string)
-
-VS Code extension
-
-The DotNetPrune VS Code extension displays analysis results from DotNetPrune in the Activity Bar. It can read an existing JSON report or run the DotNetPrune tool directly to generate one.
+DotNetPrune analyzes candidate unused code (methods, parameters, fields, properties, types) in .NET solutions using Roslyn and displays the results in VS Code through an integrated hierarchical tree view.
 
 ## Features
 
-- **Tree View**: Displays findings grouped by project and file in the Activity Bar.
-- **Report Reading**: Automatically loads `dotnetprune-report.json` from the workspace root, or a custom path configured in settings.
-- **Analysis Execution**: If `dotNetPrune.toolCommand` is configured, run the analysis directly from VS Code.
-- **File Navigation**: Click on findings to open the source file and highlight the relevant line.
+- **Hierarchical Tree View**: Displays findings organized by Solution → Project → File → Unused Items
+- **Smart File Filtering**: Only processes .NET-related files (.cs, .sln, .slnx, .csproj)
+- **Direct Analysis Integration**: Runs the FindUnused analyzer directly from VS Code
+- **Interactive Navigation**: Click on findings to open source files and highlight relevant lines
+- **Solution-Aware Organization**: Automatically discovers and organizes findings by solution structure
+
+## How It Works
+
+1. **Automatic Solution Discovery**: The extension finds all .sln and .slnx files in your workspace
+2. **Integrated Analysis**: Runs the bundled FindUnused analyzer tool directly
+3. **Hierarchical Display**: Organizes findings in a logical tree structure:
+   ```
+   📁 MySolution.sln
+     📁 MyProject
+       📁 Program.cs
+         ⚠️ unused method: CalculateSum
+         ⚠️ unused field: _cachedData
+       📁 Utils.cs
+         ⚠️ unused class: HelperClass
+   ```
+4. **File Navigation**: Direct navigation to unused code locations
+
+## Usage
+
+### Running Analysis
+
+1. Open a .NET workspace with solutions or projects
+2. Use the **DotNetPrune: Run Analysis** command from the command palette
+3. Select a solution or project file when prompted
+4. View results in the DotNetPrune Activity Bar panel
+
+### Tree View Navigation
+
+- **Level 1**: Solutions (.sln/.slnx files)
+- **Level 2**: Projects within each solution
+- **Level 3**: Source files (.cs) within each project  
+- **Level 4**: Individual unused code findings
+
+### Commands
+
+- **DotNetPrune: Refresh Findings**: Re-run analysis to refresh the tree view
+- **DotNetPrune: Run Analysis**: Execute the FindUnused analyzer
+- **DotNetPrune: Clear Findings**: Clear all displayed findings
+- **DotNetPrune: Open Finding**: Navigate to the finding location in source code
 
 ## Setup
 
-1. Place `dotnetprune-report.json` in your workspace root, or configure `dotNetPrune.reportPath` in VS Code settings for a custom location.
-2. (Optional) Configure `dotNetPrune.toolCommand` in settings to enable running analysis from VS Code. Use placeholders like `${solution}`, `${reportPath}`, and `${workspaceRoot}`.
-3. Install and run the extension in Extension Development Host (F5).
-4. Use the DotNetPrune view in the Activity Bar to browse findings.
+1. **Install Extension**: Install the DotNetPrune VS Code extension
+2. **Open .NET Workspace**: Open a workspace containing .NET solutions or projects
+3. **Run Analysis**: Use the command palette to run "DotNetPrune: Run Analysis"
+4. **Browse Findings**: View results in the DotNetPrune Activity Bar panel
 
-## Commands
+## Report Format
 
-- **DotNetPrune: Refresh Findings**: Reload the report from the configured path.
-- **DotNetPrune: Run Analysis**: Execute the configured external tool to generate/update the report.
-- **DotNetPrune: Open Report File**: Open the JSON report in the editor.
-- **DotNetPrune: Clear Findings**: Clear all displayed findings.
-- **DotNetPrune: Open Finding**: (Internal) Opens a finding in the editor.
+The FindUnused analyzer produces a JSON array of findings. Each finding includes:
 
-Next steps
+- **Project** (string): Project name containing the unused code
+- **FilePath** (string): Absolute path to the source file
+- **Line** (number): 1-based line number of the finding
+- **SymbolKind** (string): Type of code element ("Method", "Parameter", "Type", etc.)
+- **ContainingType** (string): Class or type containing the unused element
+- **SymbolName** (string): Name of the unused element
+- **Accessibility** (string): Access modifier ("public", "private", etc.)
+- **Remarks** (string): Additional information about the finding
 
-- Add code actions (e.g. mark as ignored, insert [Obsolete]) in the extension.
-- Integrate DotNetPrune into CI to run on PRs and surface results.
+## Technical Details
+
+- **File Type Filtering**: Only processes .NET file types (.cs, .sln, .slnx, .csproj)
+- **Solution Association**: Automatically associates projects with their parent solutions
+- **Direct Integration**: Uses bundled FindUnused.dll tool for analysis
+- **Real-time Processing**: Processes analyzer output directly without intermediate files
+
+## Development
+
+### Building the Extension
+
+```bash
+npm install
+npm run compile
+npm run package
+```
+
+### Running the Analyzer Directly
+
+```bash
+dotnet run --project FindUnused/FindUnused.csproj -- /path/to/YourSolution.sln
+```
+
+## Benefits
+
+- **Clean Codebase Visualization**: Easily identify and remove unused code
+- **Solution-Level Overview**: Understand unused code distribution across entire solutions
+- **Efficient Navigation**: Quick access to unused code locations
+- **Integrated Workflow**: No need to run external tools or manage report files
+- **Smart Organization**: Findings are organized exactly as they appear in your solution structure
+
+## Next Steps
+
+- Add code actions to mark findings as ignored or suppressed
+- Integrate with CI/CD pipelines for automated unused code detection
+- Add confidence scoring and filtering options
+- Support for additional .NET project types

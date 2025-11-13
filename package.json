@@ -1,7 +1,7 @@
 {
   "name": "dotnet-prune-vscode",
   "displayName": "DotNetPrune",
-  "description": "Show DotNetPrune analysis results in VS Code Activity Bar by reading or generating the JSON report.",
+  "description": "Visualize unused .NET code in VS Code with hierarchical tree view showing findings organized by solution, project, and files.",
   "version": "0.0.1",
   "publisher": "nomad-in-code",
   "icon": "./resources/icon.png",
@@ -20,8 +20,7 @@
   "categories": [
     "Linters"
   ],
-  "activationEvents": [
-  ],
+  "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -31,11 +30,7 @@
       },
       {
         "command": "dotnetprune.runAnalysis",
-        "title": "DotNetPrune: Run Analysis (external tool)"
-      },
-      {
-        "command": "dotnetprune.openReport",
-        "title": "DotNetPrune: Open Report File"
+        "title": "DotNetPrune: Run Analysis"
       },
       {
         "command": "dotnetprune.clearFindings",
@@ -49,23 +44,7 @@
     "configuration": {
       "type": "object",
       "title": "DotNetPrune",
-      "properties": {
-        "dotNetPrune.reportPath": {
-          "type": "string",
-          "default": "",
-          "description": "Path to the DotNetPrune JSON report. Can be absolute or workspace-relative. If empty, extension will search for dotnetprune-report.json in the workspace root."
-        },
-        "dotNetPrune.toolCommand": {
-          "type": "string",
-          "default": "",
-          "description": "Optional external command to run DotNetPrune and produce the JSON report. Use ${solution}, ${reportPath}, and ${workspaceRoot} placeholders."
-        },
-        "dotNetPrune.showOnlyHighConfidence": {
-          "type": "boolean",
-          "default": false,
-          "description": "If true, show only high-confidence findings (requires the report to include a confidence field)."
-        }
-      }
+      "properties": {}
     },
     "viewsContainers": {
       "activitybar": [
@@ -88,9 +67,9 @@
   },
   "scripts": {
     "compile": "node esbuild.js",
-    "clean":"rm -rf dotnet-prune-vscode-0.0.1.vsix",
+    "clean": "rm -rf dotnet-prune-vscode-0.0.1.vsix",
     "dotnet:publish": "dotnet publish ./FindUnused/FindUnused.csproj --output ./dist/FindUnused/",
-    "package": "pnpm clean && pnpm compile && pnpm dotnet:publish && vsce package"
+    "package": "pnpm compile && pnpm dotnet:publish && vsce package"
   },
   "devDependencies": {
     "@types/vscode": "^1.105.0",

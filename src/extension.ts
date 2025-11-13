@@ -16,6 +16,7 @@ let outputChannel: vscode.OutputChannel | undefined;
 
 type Finding = {
   Project: string;
+  Solution?: string;
   FilePath: string;
   Line: number;
   SymbolKind: string;
@@ -25,6 +26,64 @@ type Finding = {
   Remarks: string;
   confidence?: number;
 };
+
+// Helper function to get appropriate icon for symbol kinds
+function getIconForSymbolKind(symbolKind: string): vscode.ThemeIcon {
+  const kind = symbolKind.toLowerCase();
+  
+  // Class-related icons
+  if (kind.includes('class') || kind.includes('type')) {
+    return new vscode.ThemeIcon("symbol-class");
+  }
+  
+  // Interface icons
+  if (kind.includes('interface')) {
+    return new vscode.ThemeIcon("symbol-interface");
+  }
+  
+  // Method icons
+  if (kind.includes('method') || kind.includes('function')) {
+    return new vscode.ThemeIcon("symbol-method");
+  }
+  
+  // Property icons
+  if (kind.includes('property')) {
+    return new vscode.ThemeIcon("symbol-property");
+  }
+  
+  // Field/Variable icons
+  if (kind.includes('field') || kind.includes('variable')) {
+    return new vscode.ThemeIcon("symbol-field");
+  }
+  
+  // Parameter icons
+  if (kind.includes('parameter') || kind.includes('param')) {
+    return new vscode.ThemeIcon("symbol-parameter");
+  }
+  
+  // Enum icons
+  if (kind.includes('enum')) {
+    return new vscode.ThemeIcon("symbol-enum");
+  }
+  
+  // Struct icons
+  if (kind.includes('struct')) {
+    return new vscode.ThemeIcon("symbol-structure");
+  }
+  
+  // Namespace icons
+  if (kind.includes('namespace')) {
+    return new vscode.ThemeIcon("symbol-namespace");
+  }
+  
+  // Event icons
+  if (kind.includes('event')) {
+    return new vscode.ThemeIcon("symbol-event");
+  }
+  
+  // Default warning icon for unknown types
+  return new vscode.ThemeIcon("warning");
+}
 
 export function activate(context: vscode.ExtensionContext) {
   const provider = new UnusedTreeProvider(context);
@@ -40,9 +99,6 @@ export function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand("dotnetprune.runAnalysis", async () => {
       await provider.runAnalysisAndRefresh();
-    }),
-    vscode.commands.registerCommand("dotnetprune.openReport", async () => {
-      await provider.openReportFile();
     }),
     vscode.commands.registerCommand("dotnetprune.clearFindings", () =>
       provider.clear()
@@ -73,7 +129,10 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   readonly onDidChangeTreeData: vscode.Event<TreeItemBase | undefined> =
     this._onDidChangeTreeData.event;
   private findings: Finding[] = [];
-  private groupedByProject: Map<string, Map<string, Finding[]>> = new Map();
+  private groupedBySolution: Map<string, Map<string, Map<string, Finding[]>>> =
+    new Map();
+  private solutionFiles: Map<string, string> = new Map(); // solutionName -> solutionFilePath
+  private projectToSolutionMap: Map<string, string> = new Map(); // projectName -> solutionName
 
   constructor(private context: vscode.ExtensionContext) {}
 
@@ -87,15 +146,14 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
   clear(): void {
     this.findings = [];
-    this.groupedByProject.clear();
+    this.groupedBySolution.clear();
+    this.solutionFiles.clear();
+    this.projectToSolutionMap.clear();
     this._onDidChangeTreeData.fire(undefined);
     vscode.window.showInformationMessage("DotNetPrune: findings cleared.");
   }
 
   async runAnalysisAndRefresh(silent: boolean = false): Promise<void> {
-    const config = vscode.workspace.getConfiguration("dotNetPrune");
-    const reportPathSetting = config.get<string>("reportPath") ?? "";
-
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
       vscode.window.showErrorMessage(
@@ -104,20 +162,21 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       return;
     }
 
-    // discover solution/csproj files
+    // discover solution/csproj files (excluding build folders)
+    const excludedFolders = "**/{bin,debug,obj,release,nuget,bin/**,debug/**,obj/**,release/**,nuget/**}/**";
     const slnxCandidates = await vscode.workspace.findFiles(
       "**/*.slnx",
-      "**/node_modules/**",
+      `${excludedFolders},**/node_modules/**`,
       10
     );
     const slnCandidates = await vscode.workspace.findFiles(
       "**/*.sln",
-      "**/node_modules/**",
+      `${excludedFolders},**/node_modules/**`,
       10
     );
     const csprojCandidates = await vscode.workspace.findFiles(
       "**/*.csproj",
-      "**/node_modules/**",
+      `${excludedFolders},**/node_modules/**`,
       20
     );
 
@@ -155,12 +214,6 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       return;
     }
 
-    // resolve report path
-    const defaultReport =
-      reportPathSetting && reportPathSetting.trim() !== ""
-        ? reportPathSetting
-        : path.join(getWorkspaceRootPath(), "dotnetprune-report.json");
-
     const dllPath = this.getDllPath();
     if (!dllPath || !fs.existsSync(dllPath)) {
       vscode.window.showErrorMessage(
@@ -177,17 +230,17 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         cancellable: true,
       },
       async (progress, token) => {
-        progress.report({ message: "Executing FindUnused analyzer..." });
+        progress.report({ message: "Executing DotNet Prune analyzer..." });
 
         return new Promise<boolean>((resolve) => {
-          const child = spawn('dotnet', [dllPath, chosenPath], {
+          const child = spawn("dotnet", [dllPath, chosenPath], {
             cwd: getWorkspaceRootPath(),
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ["ignore", "pipe", "pipe"],
             timeout: 300000, // 5 minute timeout
           });
 
-          let stdout = '';
-          let stderr = '';
+          let stdout = "";
+          let stderr = "";
 
           // Handle cancellation
           token.onCancellationRequested(() => {
@@ -195,15 +248,15 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
             resolve(false);
           });
 
-          child.stdout.on('data', (data: Buffer) => {
+          child.stdout.on("data", (data: Buffer) => {
             stdout += data.toString();
           });
 
-          child.stderr.on('data', (data: Buffer) => {
+          child.stderr.on("data", (data: Buffer) => {
             stderr += data.toString();
           });
 
-          child.on('close', async (code: number) => {
+          child.on("close", async (code: number) => {
             try {
               // Check exit code - code 1 means findings detected (success), other codes are errors
               if (code !== 0 && code !== 1) {
@@ -218,7 +271,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
               // Parse JSON from stdout - expect clean JSON array
               const trimmedStdout = stdout.trim();
               if (!trimmedStdout) {
-                throw new Error('No output received from analyzer');
+                throw new Error("No output received from analyzer");
               }
 
               // Try to parse as JSON directly
@@ -229,19 +282,22 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
                 // Fallback: try to extract JSON array if wrapped in other text
                 const jsonMatch = trimmedStdout.match(/(\[[\s\S]*\])/);
                 if (!jsonMatch) {
-                  throw new Error(`Invalid JSON output from analyzer: ${parseError}`);
+                  throw new Error(
+                    `Invalid JSON output from analyzer: ${parseError}`
+                  );
                 }
                 findings = JSON.parse(jsonMatch[1]);
               }
 
               // Validate findings structure
               if (!Array.isArray(findings)) {
-                throw new Error('Analyzer output is not a valid findings array');
+                throw new Error(
+                  "Analyzer output is not a valid findings array"
+                );
               }
 
               await this.loadFindingsFromJson(findings);
               resolve(true);
-
             } catch (error: any) {
               const errorMsg = `Failed to parse analyzer output: ${error.message}`;
               vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`);
@@ -251,7 +307,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
             }
           });
 
-          child.on('error', (error: Error) => {
+          child.on("error", (error: Error) => {
             const errorMsg = `Failed to execute analyzer: ${error.message}`;
             vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`);
             this.appendToOutput(errorMsg);
@@ -269,27 +325,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     );
 
     // Open the DotNetPrune view to show the findings
-    vscode.commands.executeCommand('workbench.view.dotnetprune-views');
-  }
-
-  async openReportFile(): Promise<void> {
-    const config = vscode.workspace.getConfiguration("dotNetPrune");
-    const reportPathSetting = config.get<string>("reportPath") ?? "";
-    const reportPath =
-      reportPathSetting && reportPathSetting.trim() !== ""
-        ? path.isAbsolute(reportPathSetting)
-          ? reportPathSetting
-          : path.join(getWorkspaceRootPath(), reportPathSetting)
-        : path.join(getWorkspaceRootPath(), "dotnetprune-report.json");
-
-    if (!fs.existsSync(reportPath)) {
-      vscode.window.showWarningMessage(
-        `DotNetPrune: report not found at ${reportPath}`
-      );
-      return;
-    }
-    const doc = await vscode.workspace.openTextDocument(reportPath);
-    await vscode.window.showTextDocument(doc, { preview: true });
+    vscode.commands.executeCommand("workbench.view.dotnetprune-views");
   }
 
   private getDllPath(): string {
@@ -312,56 +348,410 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       // Ensure it's within the workspace
       const workspaceRoot = getWorkspaceRootPath();
       const relativePath = path.relative(workspaceRoot, filePath);
-      if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
         return false; // Path is outside workspace
       }
 
       // Check file extension
       const ext = path.extname(filePath).toLowerCase();
-      return ['.sln', '.slnx', '.csproj'].includes(ext);
-
+      return [".sln", ".slnx", ".csproj"].includes(ext);
     } catch (error) {
       return false;
     }
   }
 
+  // Extract project name from file path
+  private extractProjectNameFromPath(filePath: string): string {
+    try {
+      const relativePath = path.relative(getWorkspaceRootPath(), filePath);
+      const parts = relativePath.split(path.sep);
+      
+      // If the file is in a Models, Services, etc. subfolder, look for the actual project folder
+      if (parts.length > 1) {
+        // Check for common project folder patterns
+        for (let i = 0; i < parts.length - 1; i++) {
+          const part = parts[i];
+          
+          // Skip common non-project directories
+          if (['src', 'lib', 'test', 'tests', 'assets', 'resources', 'common', 'models', 'services', 'controllers'].includes(part.toLowerCase())) {
+            continue;
+          }
+          
+          // This might be the actual project folder
+          if (part && part !== '' && !part.includes('.')) {
+            // Verify this folder contains code files or is a project folder
+            const projectFolderPath = path.join(getWorkspaceRootPath(), parts.slice(0, i + 1).join(path.sep));
+            
+            if (fs.existsSync(projectFolderPath)) {
+              try {
+                const files = fs.readdirSync(projectFolderPath);
+                const hasCsFiles = files.some(f => f.endsWith('.cs'));
+                const hasCsproj = files.some(f => f.endsWith('.csproj'));
+                
+                if (hasCsFiles || hasCsproj) {
+                  return part;
+                }
+              } catch (e) {
+                // Continue if we can't read the directory
+              }
+            }
+          }
+        }
+      }
+      
+      // Fallback: look for .csproj files in the directory structure
+      const projectInfo = this.findProjectForFile(filePath);
+      if (projectInfo) {
+        return projectInfo;
+      }
+      
+      // Ultimate fallback: use the first directory
+      const topLevelDir = parts[0];
+      if (topLevelDir && topLevelDir !== '') {
+        return topLevelDir;
+      }
+      
+      return "Project";
+    } catch (error) {
+      return "Project";
+    }
+  }
+
+  // Find the project that contains this file by looking for .csproj files
+  private findProjectForFile(filePath: string): string | null {
+    try {
+      const fileDir = path.dirname(filePath);
+      const workspaceRoot = getWorkspaceRootPath();
+      
+      // Walk up the directory tree looking for .csproj files
+      let currentDir = fileDir;
+      while (currentDir !== workspaceRoot && currentDir !== path.dirname(currentDir)) {
+        try {
+          const files = fs.readdirSync(currentDir);
+          const csprojFiles = files.filter(f => f.endsWith('.csproj'));
+          
+          if (csprojFiles.length > 0) {
+            // Use the first .csproj file found
+            const projectName = path.basename(csprojFiles[0], '.csproj');
+            return projectName;
+          }
+        } catch (e) {
+          // Continue if we can't read the directory
+        }
+        
+        currentDir = path.dirname(currentDir);
+      }
+    } catch (error) {
+      // Ignore errors
+    }
+    
+    return null;
+  }
+
+  // Check if a path contains code files
+  private containsCodeFiles(relativePath: string): boolean {
+    return relativePath.includes('.cs') || relativePath.includes('.vb') || relativePath.includes('.fs');
+  }
+
+  // Better categorization based on file path analysis
+  private categorizeByFilePath(filePath: string): string {
+    try {
+      const relativePath = path.relative(getWorkspaceRootPath(), filePath);
+      const parts = relativePath.split(path.sep);
+      
+      // Look for solution files in parent directories
+      for (let i = 0; i < parts.length; i++) {
+        const currentPath = parts.slice(0, i + 1).join(path.sep);
+        const dirPath = path.join(getWorkspaceRootPath(), currentPath);
+        
+        if (fs.existsSync(dirPath)) {
+          const files = fs.readdirSync(dirPath);
+          const hasSlnFile = files.some(f => f.toLowerCase().endsWith('.sln') || f.toLowerCase().endsWith('.slnx'));
+          
+          if (hasSlnFile) {
+            const solutionName = path.basename(currentPath);
+            return solutionName;
+          }
+        }
+      }
+      
+      return "Standalone Projects";
+    } catch (error) {
+      return "Standalone Projects";
+    }
+  }
 
   private async loadFindingsFromJson(findingsJson: any[]): Promise<void> {
     if (!Array.isArray(findingsJson)) {
       throw new Error("Findings JSON must be an array.");
     }
 
-    // Map to internal Finding type and normalize paths
-    const mapped: Finding[] = findingsJson.map((p: any) => {
-      const filePath = p.FilePath ?? p.filePath ?? "";
-      const resolved = path.isAbsolute(filePath)
-        ? filePath
-        : path.join(getWorkspaceRootPath(), filePath);
-      return {
-        Project: p.Project ?? p.project ?? "",
-        FilePath: resolved,
-        Line: typeof p.Line === "number" ? p.Line : p.line ?? 1,
-        SymbolKind: p.SymbolKind ?? p.symbolKind ?? "",
-        ContainingType: p.ContainingType ?? p.containingType ?? "",
-        SymbolName: p.SymbolName ?? p.symbolName ?? "",
-        Accessibility: p.Accessibility ?? p.accessibility ?? "",
-        Remarks: p.Remarks ?? p.remarks ?? "",
-        confidence: typeof p.confidence === "number" ? p.confidence : undefined,
-      };
-    });
+    // Discover all solution files and project mappings in workspace
+    await this.discoverSolutionsAndProjects();
+
+    // Map to internal Finding type and normalize paths, filter for .NET files only
+    const mapped: Finding[] = findingsJson
+      .map((p: any) => {
+        const filePath = p.FilePath ?? p.filePath ?? "";
+        const resolved = path.isAbsolute(filePath)
+          ? filePath
+          : path.join(getWorkspaceRootPath(), filePath);
+
+        // Extract project name from file path if not provided
+        let projectName = p.Project ?? p.project ?? "";
+        if (!projectName || projectName === "") {
+          projectName = this.extractProjectNameFromPath(resolved);
+        }
+
+        // Determine which solution this project belongs to
+        const solution = this.findSolutionForProject(projectName, resolved);
+
+        return {
+          Project: projectName,
+          Solution: solution,
+          FilePath: resolved,
+          Line: typeof p.Line === "number" ? p.Line : p.line ?? 1,
+          SymbolKind: p.SymbolKind ?? p.symbolKind ?? "",
+          ContainingType: p.ContainingType ?? p.containingType ?? "",
+          SymbolName: p.SymbolName ?? p.symbolName ?? "",
+          Accessibility: p.Accessibility ?? p.accessibility ?? "",
+          Remarks: p.Remarks ?? p.remarks ?? "",
+          confidence:
+            typeof p.confidence === "number" ? p.confidence : undefined,
+        };
+      })
+      .filter((finding: Finding) => {
+        // Only include findings from .NET-related files
+        const ext = path.extname(finding.FilePath).toLowerCase();
+        return [".cs", ".sln", ".slnx", ".csproj"].includes(ext);
+      });
 
     this.findings = mapped;
-    this.groupedByProject.clear();
+    this.groupedBySolution.clear();
 
+    // Organize findings by Solution -> Project -> File
     for (const f of this.findings) {
-      const proj = f.Project || "Unknown";
-      if (!this.groupedByProject.has(proj))
-        this.groupedByProject.set(proj, new Map());
-      const byFile = this.groupedByProject.get(proj)!;
+      const solutionName = f.Solution || this.categorizeByFilePath(f.FilePath);
+      const projectName = f.Project || this.extractProjectNameFromPath(f.FilePath);
+
+      if (!this.groupedBySolution.has(solutionName)) {
+        this.groupedBySolution.set(solutionName, new Map());
+      }
+
+      const projectsMap = this.groupedBySolution.get(solutionName)!;
+      if (!projectsMap.has(projectName)) {
+        projectsMap.set(projectName, new Map());
+      }
+
+      const filesMap = projectsMap.get(projectName)!;
       const fileKey = f.FilePath || "(generated)";
-      if (!byFile.has(fileKey)) byFile.set(fileKey, []);
-      byFile.get(fileKey)!.push(f);
+      if (!filesMap.has(fileKey)) filesMap.set(fileKey, []);
+      filesMap.get(fileKey)!.push(f);
     }
+  }
+
+  private async discoverSolutionsAndProjects(): Promise<void> {
+    this.solutionFiles.clear();
+    this.projectToSolutionMap.clear();
+
+    // Exclude build folders when discovering solutions too
+    const excludedFolders = "**/{bin,debug,obj,release,nuget,bin/**,debug/**,obj/**,release/**,nuget/**}/**";
+    
+    const slnxFiles = await vscode.workspace.findFiles(
+      "**/*.slnx",
+      `${excludedFolders},**/node_modules/**`,
+      10
+    );
+    const slnFiles = await vscode.workspace.findFiles(
+      "**/*.sln",
+      `${excludedFolders},**/node_modules/**`,
+      10
+    );
+
+    const allSolutions = [...slnxFiles, ...slnFiles];
+
+    for (const solutionFile of allSolutions) {
+      const solutionName = path.basename(
+        solutionFile.fsPath,
+        path.extname(solutionFile.fsPath)
+      );
+      this.solutionFiles.set(solutionName, solutionFile.fsPath);
+      
+      // Discover projects associated with this solution
+      await this.discoverProjectsForSolution(solutionFile.fsPath, solutionName);
+    }
+
+    // Also discover standalone projects (projects not in solutions)
+    await this.discoverStandaloneProjects();
+  }
+
+  private async discoverStandaloneProjects(): Promise<void> {
+    try {
+      const excludedFolders = "**/{bin,debug,obj,release,nuget,bin/**,debug/**,obj/**,release/**,nuget/**}/**";
+      
+      const csprojFiles = await vscode.workspace.findFiles(
+        "**/*.csproj",
+        `${excludedFolders},**/node_modules/**`,
+        100
+      );
+
+      for (const csprojFile of csprojFiles) {
+        const projectName = path.basename(csprojFile.fsPath, '.csproj');
+        const projectDir = path.dirname(csprojFile.fsPath);
+        
+        // Check if this project is already associated with a solution
+        let alreadyAssociated = false;
+        for (const [_, solutionName] of this.solutionFiles) {
+          if (projectDir.startsWith(path.dirname(solutionName))) {
+            alreadyAssociated = true;
+            break;
+          }
+        }
+        
+        if (!alreadyAssociated) {
+          this.projectToSolutionMap.set(projectName, "Standalone Projects");
+        }
+      }
+    } catch (error) {
+      this.appendToOutput(`Warning: Could not discover standalone projects: ${error}`);
+    }
+  }
+
+  private async discoverProjectsForSolution(solutionPath: string, solutionName: string): Promise<void> {
+    try {
+      const solutionDir = path.dirname(solutionPath);
+      const csprojFiles = await vscode.workspace.findFiles(
+        `${path.relative(getWorkspaceRootPath(), solutionDir)}/**/*.csproj`,
+        "**/{bin,debug,obj,release,nuget}/**",
+        100
+      );
+
+      for (const csprojFile of csprojFiles) {
+        const projectName = path.basename(csprojFile.fsPath, '.csproj');
+        this.projectToSolutionMap.set(projectName, solutionName);
+        
+        // Associate the project directory as well
+        const projectDir = path.dirname(csprojFile.fsPath);
+        const relativeProjectDir = path.relative(solutionDir, projectDir);
+        const dirName = path.basename(projectDir);
+        
+        // If the project is in a subdirectory, associate that too
+        if (dirName && dirName !== solutionName) {
+          this.projectToSolutionMap.set(dirName, solutionName);
+        }
+        
+        // Also try to find all directories in the project path that might be referenced
+        if (relativeProjectDir && relativeProjectDir !== '.') {
+          const pathParts = relativeProjectDir.split(path.sep);
+          for (let i = 0; i < pathParts.length; i++) {
+            const partialPath = pathParts.slice(0, i + 1).join(path.sep);
+            const fullPath = path.join(solutionDir, partialPath);
+            const partialDirName = path.basename(fullPath);
+            
+            if (partialDirName && partialDirName !== solutionName) {
+              this.projectToSolutionMap.set(partialDirName, solutionName);
+            }
+          }
+        }
+      }
+      
+      this.appendToOutput(`Discovered ${csprojFiles.length} projects for solution ${solutionName}`);
+    } catch (error) {
+      // Ignore errors in project discovery
+      this.appendToOutput(`Warning: Could not discover projects for solution ${solutionName}: ${error}`);
+    }
+  }
+
+  private findSolutionForProject(projectName: string, filePath?: string): string | undefined {
+    // First check our project-to-solution mapping
+    if (this.projectToSolutionMap.has(projectName)) {
+      return this.projectToSolutionMap.get(projectName);
+    }
+
+    // Enhanced logic for namespace-based projects (e.g., "FlowCore.Models")
+    if (projectName.includes('.')) {
+      const namespaceParts = projectName.split('.');
+      // Try each part of the namespace to find a matching project
+      for (let i = namespaceParts.length - 1; i >= 0; i--) {
+        const partialProject = namespaceParts.slice(0, i + 1).join('.');
+        if (this.projectToSolutionMap.has(partialProject)) {
+          return this.projectToSolutionMap.get(partialProject);
+        }
+        
+        // Also try just the last part (e.g., "Models")
+        if (i === namespaceParts.length - 1 && this.projectToSolutionMap.has(namespaceParts[i])) {
+          return this.projectToSolutionMap.get(namespaceParts[i]);
+        }
+      }
+    }
+
+    // Try fuzzy matching with known solutions
+    for (const [solutionName, solutionPath] of this.solutionFiles) {
+      if (
+        projectName.toLowerCase().includes(solutionName.toLowerCase()) ||
+        solutionName.toLowerCase().includes(projectName.toLowerCase()) ||
+        this.hasFuzzyMatch(projectName, solutionName)
+      ) {
+        return solutionName;
+      }
+    }
+
+    // Enhanced path-based solution finding
+    if (filePath) {
+      const pathBasedSolution = this.findSolutionByFilePath(filePath);
+      if (pathBasedSolution) {
+        return pathBasedSolution;
+      }
+    }
+
+    return undefined;
+  }
+
+  // Enhanced solution finding based on file path analysis
+  private findSolutionByFilePath(filePath: string): string | null {
+    try {
+      const fileDir = path.dirname(filePath);
+      const workspaceRoot = getWorkspaceRootPath();
+      
+      // Walk up the directory tree looking for solution files
+      let currentDir = fileDir;
+      while (currentDir !== workspaceRoot && currentDir !== path.dirname(currentDir)) {
+        try {
+          const files = fs.readdirSync(currentDir);
+          const solutionFiles = files.filter(f =>
+            f.toLowerCase().endsWith('.sln') || f.toLowerCase().endsWith('.slnx')
+          );
+          
+          if (solutionFiles.length > 0) {
+            const solutionName = path.basename(solutionFiles[0], path.extname(solutionFiles[0]));
+            return solutionName;
+          }
+        } catch (e) {
+          // Continue if we can't read the directory
+        }
+        
+        currentDir = path.dirname(currentDir);
+      }
+    } catch (error) {
+      // Ignore errors
+    }
+    
+    return null;
+  }
+
+  private hasFuzzyMatch(projectName: string, solutionName: string): boolean {
+    const projectWords = projectName.toLowerCase().split(/[\s\-_\.]/);
+    const solutionWords = solutionName.toLowerCase().split(/[\s\-_\.]/);
+    
+    for (const pWord of projectWords) {
+      for (const sWord of solutionWords) {
+        if (pWord.length > 2 && sWord.length > 2 && 
+            (pWord.includes(sWord) || sWord.includes(pWord))) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   // open a finding in editor and reveal the line
@@ -408,14 +798,16 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
   getChildren(element?: TreeItemBase): Thenable<TreeItemBase[]> {
     if (!element) {
-      // top-level: projects
-      const items = Array.from(this.groupedByProject.keys()).map((proj) => {
-        const item = new ProjectTreeItem(
-          proj,
-          vscode.TreeItemCollapsibleState.Collapsed
-        );
-        return item;
-      });
+      // top-level: solutions
+      const items = Array.from(this.groupedBySolution.keys()).map(
+        (solution) => {
+          const item = new SolutionTreeItem(
+            solution,
+            vscode.TreeItemCollapsibleState.Collapsed
+          );
+          return item;
+        }
+      );
       // if no findings, show hint
       if (items.length === 0) {
         return Promise.resolve([
@@ -428,16 +820,40 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       return Promise.resolve(items);
     }
 
+    if (element instanceof SolutionTreeItem) {
+      const solution = element.label as string;
+      const projects = this.groupedBySolution.get(solution);
+      if (!projects) return Promise.resolve([]);
+      const projectItems: TreeItemBase[] = [];
+      for (const [projectName, filesMap] of projects) {
+        const projectItem = new ProjectTreeItem(
+          projectName,
+          solution,
+          vscode.TreeItemCollapsibleState.Collapsed
+        );
+        projectItems.push(projectItem);
+      }
+      return Promise.resolve(projectItems);
+    }
+
     if (element instanceof ProjectTreeItem) {
-      const proj = element.label as string;
-      const files = this.groupedByProject.get(proj);
+      const solution = element.solutionName;
+      const projectName = element.label as string;
+
+      const solutionData = this.groupedBySolution.get(solution);
+      if (!solutionData) return Promise.resolve([]);
+
+      const files = solutionData.get(projectName);
       if (!files) return Promise.resolve([]);
+
       const fileItems: TreeItemBase[] = [];
       for (const [filePath, findings] of files) {
         const fileLabel = path.relative(getWorkspaceRootPath(), filePath);
         const fileItem = new FileTreeItem(
           fileLabel,
           filePath,
+          solution,
+          projectName,
           vscode.TreeItemCollapsibleState.Collapsed
         );
         fileItems.push(fileItem);
@@ -447,12 +863,16 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
     if (element instanceof FileTreeItem) {
       const filePath = element.filePath;
-      // find entries
-      const projEntry = Array.from(this.groupedByProject.entries()).find(
-        ([, files]) => files.has(filePath)
-      );
-      if (!projEntry) return Promise.resolve([]);
-      const findings = projEntry[1].get(filePath) || [];
+      const solution = element.solutionName;
+      const projectName = element.projectName;
+
+      const solutionData = this.groupedBySolution.get(solution);
+      if (!solutionData) return Promise.resolve([]);
+
+      const filesMap = solutionData.get(projectName);
+      if (!filesMap) return Promise.resolve([]);
+
+      const findings = filesMap.get(filePath) || [];
       const items = findings.map((f) => {
         const label = `${f.SymbolKind}: ${f.SymbolName}`;
         const ti = new FindingTreeItem(
@@ -486,9 +906,21 @@ class MessageTreeItem extends TreeItemBase {
   }
 }
 
+class SolutionTreeItem extends TreeItemBase {
+  constructor(
+    public readonly label: string,
+    state: vscode.TreeItemCollapsibleState
+  ) {
+    super(label, state);
+    this.contextValue = "solution";
+    this.iconPath = new vscode.ThemeIcon("root-folder");
+  }
+}
+
 class ProjectTreeItem extends TreeItemBase {
   constructor(
     public readonly label: string,
+    public readonly solutionName: string,
     state: vscode.TreeItemCollapsibleState
   ) {
     super(label, state);
@@ -501,6 +933,8 @@ class FileTreeItem extends TreeItemBase {
   constructor(
     public readonly label: string,
     public readonly filePath: string,
+    public readonly solutionName: string,
+    public readonly projectName: string,
     state: vscode.TreeItemCollapsibleState
   ) {
     super(label, state);
@@ -518,7 +952,8 @@ class FindingTreeItem extends TreeItemBase {
   ) {
     super(label, state);
     this.contextValue = "finding";
-    this.iconPath = new vscode.ThemeIcon("warning"); // severity-neutral; you can change based on accessibility/confidence
+    // Use dotnet-specific icon based on symbol kind
+    this.iconPath = getIconForSymbolKind(finding.SymbolKind);
     // The command to open the finding is set by the provider
   }
 }
