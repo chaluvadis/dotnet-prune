@@ -16,6 +16,7 @@ let outputChannel: vscode.OutputChannel | undefined;
 
 type Finding = {
   Project: string;
+  Solution?: string;
   FilePath: string;
   Line: number;
   SymbolKind: string;
@@ -40,9 +41,6 @@ export function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand("dotnetprune.runAnalysis", async () => {
       await provider.runAnalysisAndRefresh();
-    }),
-    vscode.commands.registerCommand("dotnetprune.openReport", async () => {
-      await provider.openReportFile();
     }),
     vscode.commands.registerCommand("dotnetprune.clearFindings", () =>
       provider.clear()
@@ -73,7 +71,9 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   readonly onDidChangeTreeData: vscode.Event<TreeItemBase | undefined> =
     this._onDidChangeTreeData.event;
   private findings: Finding[] = [];
-  private groupedByProject: Map<string, Map<string, Finding[]>> = new Map();
+  private groupedBySolution: Map<string, Map<string, Map<string, Finding[]>>> =
+    new Map();
+  private solutionFiles: Map<string, string> = new Map(); // solutionName -> solutionFilePath
 
   constructor(private context: vscode.ExtensionContext) {}
 
@@ -87,15 +87,13 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
   clear(): void {
     this.findings = [];
-    this.groupedByProject.clear();
+    this.groupedBySolution.clear();
+    this.solutionFiles.clear();
     this._onDidChangeTreeData.fire(undefined);
     vscode.window.showInformationMessage("DotNetPrune: findings cleared.");
   }
 
   async runAnalysisAndRefresh(silent: boolean = false): Promise<void> {
-    const config = vscode.workspace.getConfiguration("dotNetPrune");
-    const reportPathSetting = config.get<string>("reportPath") ?? "";
-
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
       vscode.window.showErrorMessage(
@@ -155,12 +153,6 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       return;
     }
 
-    // resolve report path
-    const defaultReport =
-      reportPathSetting && reportPathSetting.trim() !== ""
-        ? reportPathSetting
-        : path.join(getWorkspaceRootPath(), "dotnetprune-report.json");
-
     const dllPath = this.getDllPath();
     if (!dllPath || !fs.existsSync(dllPath)) {
       vscode.window.showErrorMessage(
@@ -177,17 +169,17 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         cancellable: true,
       },
       async (progress, token) => {
-        progress.report({ message: "Executing FindUnused analyzer..." });
+        progress.report({ message: "Executing DotNet Prune analyzer..." });
 
         return new Promise<boolean>((resolve) => {
-          const child = spawn('dotnet', [dllPath, chosenPath], {
+          const child = spawn("dotnet", [dllPath, chosenPath], {
             cwd: getWorkspaceRootPath(),
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ["ignore", "pipe", "pipe"],
             timeout: 300000, // 5 minute timeout
           });
 
-          let stdout = '';
-          let stderr = '';
+          let stdout = "";
+          let stderr = "";
 
           // Handle cancellation
           token.onCancellationRequested(() => {
@@ -195,15 +187,15 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
             resolve(false);
           });
 
-          child.stdout.on('data', (data: Buffer) => {
+          child.stdout.on("data", (data: Buffer) => {
             stdout += data.toString();
           });
 
-          child.stderr.on('data', (data: Buffer) => {
+          child.stderr.on("data", (data: Buffer) => {
             stderr += data.toString();
           });
 
-          child.on('close', async (code: number) => {
+          child.on("close", async (code: number) => {
             try {
               // Check exit code - code 1 means findings detected (success), other codes are errors
               if (code !== 0 && code !== 1) {
@@ -218,7 +210,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
               // Parse JSON from stdout - expect clean JSON array
               const trimmedStdout = stdout.trim();
               if (!trimmedStdout) {
-                throw new Error('No output received from analyzer');
+                throw new Error("No output received from analyzer");
               }
 
               // Try to parse as JSON directly
@@ -229,19 +221,22 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
                 // Fallback: try to extract JSON array if wrapped in other text
                 const jsonMatch = trimmedStdout.match(/(\[[\s\S]*\])/);
                 if (!jsonMatch) {
-                  throw new Error(`Invalid JSON output from analyzer: ${parseError}`);
+                  throw new Error(
+                    `Invalid JSON output from analyzer: ${parseError}`
+                  );
                 }
                 findings = JSON.parse(jsonMatch[1]);
               }
 
               // Validate findings structure
               if (!Array.isArray(findings)) {
-                throw new Error('Analyzer output is not a valid findings array');
+                throw new Error(
+                  "Analyzer output is not a valid findings array"
+                );
               }
 
               await this.loadFindingsFromJson(findings);
               resolve(true);
-
             } catch (error: any) {
               const errorMsg = `Failed to parse analyzer output: ${error.message}`;
               vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`);
@@ -251,7 +246,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
             }
           });
 
-          child.on('error', (error: Error) => {
+          child.on("error", (error: Error) => {
             const errorMsg = `Failed to execute analyzer: ${error.message}`;
             vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`);
             this.appendToOutput(errorMsg);
@@ -269,27 +264,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     );
 
     // Open the DotNetPrune view to show the findings
-    vscode.commands.executeCommand('workbench.view.dotnetprune-views');
-  }
-
-  async openReportFile(): Promise<void> {
-    const config = vscode.workspace.getConfiguration("dotNetPrune");
-    const reportPathSetting = config.get<string>("reportPath") ?? "";
-    const reportPath =
-      reportPathSetting && reportPathSetting.trim() !== ""
-        ? path.isAbsolute(reportPathSetting)
-          ? reportPathSetting
-          : path.join(getWorkspaceRootPath(), reportPathSetting)
-        : path.join(getWorkspaceRootPath(), "dotnetprune-report.json");
-
-    if (!fs.existsSync(reportPath)) {
-      vscode.window.showWarningMessage(
-        `DotNetPrune: report not found at ${reportPath}`
-      );
-      return;
-    }
-    const doc = await vscode.workspace.openTextDocument(reportPath);
-    await vscode.window.showTextDocument(doc, { preview: true });
+    vscode.commands.executeCommand("workbench.view.dotnetprune-views");
   }
 
   private getDllPath(): string {
@@ -312,56 +287,122 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       // Ensure it's within the workspace
       const workspaceRoot = getWorkspaceRootPath();
       const relativePath = path.relative(workspaceRoot, filePath);
-      if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
         return false; // Path is outside workspace
       }
 
       // Check file extension
       const ext = path.extname(filePath).toLowerCase();
-      return ['.sln', '.slnx', '.csproj'].includes(ext);
-
+      return [".sln", ".slnx", ".csproj"].includes(ext);
     } catch (error) {
       return false;
     }
   }
-
 
   private async loadFindingsFromJson(findingsJson: any[]): Promise<void> {
     if (!Array.isArray(findingsJson)) {
       throw new Error("Findings JSON must be an array.");
     }
 
-    // Map to internal Finding type and normalize paths
-    const mapped: Finding[] = findingsJson.map((p: any) => {
-      const filePath = p.FilePath ?? p.filePath ?? "";
-      const resolved = path.isAbsolute(filePath)
-        ? filePath
-        : path.join(getWorkspaceRootPath(), filePath);
-      return {
-        Project: p.Project ?? p.project ?? "",
-        FilePath: resolved,
-        Line: typeof p.Line === "number" ? p.Line : p.line ?? 1,
-        SymbolKind: p.SymbolKind ?? p.symbolKind ?? "",
-        ContainingType: p.ContainingType ?? p.containingType ?? "",
-        SymbolName: p.SymbolName ?? p.symbolName ?? "",
-        Accessibility: p.Accessibility ?? p.accessibility ?? "",
-        Remarks: p.Remarks ?? p.remarks ?? "",
-        confidence: typeof p.confidence === "number" ? p.confidence : undefined,
-      };
-    });
+    // Discover all solution files in workspace
+    await this.discoverSolutions();
+
+    // Map to internal Finding type and normalize paths, filter for .NET files only
+    const mapped: Finding[] = findingsJson
+      .map((p: any) => {
+        const filePath = p.FilePath ?? p.filePath ?? "";
+        const resolved = path.isAbsolute(filePath)
+          ? filePath
+          : path.join(getWorkspaceRootPath(), filePath);
+
+        // Determine which solution this project belongs to
+        const solution = this.findSolutionForProject(
+          p.Project ?? p.project ?? ""
+        );
+
+        return {
+          Project: p.Project ?? p.project ?? "",
+          Solution: solution,
+          FilePath: resolved,
+          Line: typeof p.Line === "number" ? p.Line : p.line ?? 1,
+          SymbolKind: p.SymbolKind ?? p.symbolKind ?? "",
+          ContainingType: p.ContainingType ?? p.containingType ?? "",
+          SymbolName: p.SymbolName ?? p.symbolName ?? "",
+          Accessibility: p.Accessibility ?? p.accessibility ?? "",
+          Remarks: p.Remarks ?? p.remarks ?? "",
+          confidence:
+            typeof p.confidence === "number" ? p.confidence : undefined,
+        };
+      })
+      .filter((finding: Finding) => {
+        // Only include findings from .NET-related files
+        const ext = path.extname(finding.FilePath).toLowerCase();
+        return [".cs", ".sln", ".slnx", ".csproj"].includes(ext);
+      });
 
     this.findings = mapped;
-    this.groupedByProject.clear();
+    this.groupedBySolution.clear();
 
+    // Organize findings by Solution -> Project -> File
     for (const f of this.findings) {
-      const proj = f.Project || "Unknown";
-      if (!this.groupedByProject.has(proj))
-        this.groupedByProject.set(proj, new Map());
-      const byFile = this.groupedByProject.get(proj)!;
+      const solutionName = f.Solution || "Standalone Projects";
+      const projectName = f.Project || "Unknown Project";
+
+      if (!this.groupedBySolution.has(solutionName)) {
+        this.groupedBySolution.set(solutionName, new Map());
+      }
+
+      const projectsMap = this.groupedBySolution.get(solutionName)!;
+      if (!projectsMap.has(projectName)) {
+        projectsMap.set(projectName, new Map());
+      }
+
+      const filesMap = projectsMap.get(projectName)!;
       const fileKey = f.FilePath || "(generated)";
-      if (!byFile.has(fileKey)) byFile.set(fileKey, []);
-      byFile.get(fileKey)!.push(f);
+      if (!filesMap.has(fileKey)) filesMap.set(fileKey, []);
+      filesMap.get(fileKey)!.push(f);
     }
+  }
+
+  private async discoverSolutions(): Promise<void> {
+    this.solutionFiles.clear();
+
+    const slnxFiles = await vscode.workspace.findFiles(
+      "**/*.slnx",
+      "**/node_modules/**",
+      10
+    );
+    const slnFiles = await vscode.workspace.findFiles(
+      "**/*.sln",
+      "**/node_modules/**",
+      10
+    );
+
+    const allSolutions = [...slnxFiles, ...slnFiles];
+
+    for (const solutionFile of allSolutions) {
+      const solutionName = path.basename(
+        solutionFile.fsPath,
+        path.extname(solutionFile.fsPath)
+      );
+      this.solutionFiles.set(solutionName, solutionFile.fsPath);
+    }
+  }
+
+  private findSolutionForProject(projectName: string): string | undefined {
+    // Simple heuristic: find solution that contains this project name
+    for (const [solutionName, solutionPath] of this.solutionFiles) {
+      if (
+        projectName.toLowerCase().includes(solutionName.toLowerCase()) ||
+        solutionName.toLowerCase().includes(projectName.toLowerCase())
+      ) {
+        return solutionName;
+      }
+    }
+
+    // If no direct match, try to find by path proximity
+    // This is a simplified approach - in reality, you'd parse solution files
+    return undefined;
   }
 
   // open a finding in editor and reveal the line
@@ -408,14 +449,16 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
   getChildren(element?: TreeItemBase): Thenable<TreeItemBase[]> {
     if (!element) {
-      // top-level: projects
-      const items = Array.from(this.groupedByProject.keys()).map((proj) => {
-        const item = new ProjectTreeItem(
-          proj,
-          vscode.TreeItemCollapsibleState.Collapsed
-        );
-        return item;
-      });
+      // top-level: solutions
+      const items = Array.from(this.groupedBySolution.keys()).map(
+        (solution) => {
+          const item = new SolutionTreeItem(
+            solution,
+            vscode.TreeItemCollapsibleState.Collapsed
+          );
+          return item;
+        }
+      );
       // if no findings, show hint
       if (items.length === 0) {
         return Promise.resolve([
@@ -428,16 +471,40 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       return Promise.resolve(items);
     }
 
+    if (element instanceof SolutionTreeItem) {
+      const solution = element.label as string;
+      const projects = this.groupedBySolution.get(solution);
+      if (!projects) return Promise.resolve([]);
+      const projectItems: TreeItemBase[] = [];
+      for (const [projectName, filesMap] of projects) {
+        const projectItem = new ProjectTreeItem(
+          projectName,
+          solution,
+          vscode.TreeItemCollapsibleState.Collapsed
+        );
+        projectItems.push(projectItem);
+      }
+      return Promise.resolve(projectItems);
+    }
+
     if (element instanceof ProjectTreeItem) {
-      const proj = element.label as string;
-      const files = this.groupedByProject.get(proj);
+      const solution = element.solutionName;
+      const projectName = element.label as string;
+
+      const solutionData = this.groupedBySolution.get(solution);
+      if (!solutionData) return Promise.resolve([]);
+
+      const files = solutionData.get(projectName);
       if (!files) return Promise.resolve([]);
+
       const fileItems: TreeItemBase[] = [];
       for (const [filePath, findings] of files) {
         const fileLabel = path.relative(getWorkspaceRootPath(), filePath);
         const fileItem = new FileTreeItem(
           fileLabel,
           filePath,
+          solution,
+          projectName,
           vscode.TreeItemCollapsibleState.Collapsed
         );
         fileItems.push(fileItem);
@@ -447,12 +514,16 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
     if (element instanceof FileTreeItem) {
       const filePath = element.filePath;
-      // find entries
-      const projEntry = Array.from(this.groupedByProject.entries()).find(
-        ([, files]) => files.has(filePath)
-      );
-      if (!projEntry) return Promise.resolve([]);
-      const findings = projEntry[1].get(filePath) || [];
+      const solution = element.solutionName;
+      const projectName = element.projectName;
+
+      const solutionData = this.groupedBySolution.get(solution);
+      if (!solutionData) return Promise.resolve([]);
+
+      const filesMap = solutionData.get(projectName);
+      if (!filesMap) return Promise.resolve([]);
+
+      const findings = filesMap.get(filePath) || [];
       const items = findings.map((f) => {
         const label = `${f.SymbolKind}: ${f.SymbolName}`;
         const ti = new FindingTreeItem(
@@ -486,9 +557,21 @@ class MessageTreeItem extends TreeItemBase {
   }
 }
 
+class SolutionTreeItem extends TreeItemBase {
+  constructor(
+    public readonly label: string,
+    state: vscode.TreeItemCollapsibleState
+  ) {
+    super(label, state);
+    this.contextValue = "solution";
+    this.iconPath = new vscode.ThemeIcon("root-folder");
+  }
+}
+
 class ProjectTreeItem extends TreeItemBase {
   constructor(
     public readonly label: string,
+    public readonly solutionName: string,
     state: vscode.TreeItemCollapsibleState
   ) {
     super(label, state);
@@ -501,6 +584,8 @@ class FileTreeItem extends TreeItemBase {
   constructor(
     public readonly label: string,
     public readonly filePath: string,
+    public readonly solutionName: string,
+    public readonly projectName: string,
     state: vscode.TreeItemCollapsibleState
   ) {
     super(label, state);
