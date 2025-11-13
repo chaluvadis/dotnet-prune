@@ -965,7 +965,7 @@ class FileTreeItem extends TreeItemBase {
   ) {
     super(label, state);
     this.contextValue = "file";
-    this.iconPath = new vscode.ThemeIcon("file");
+    this.iconPath = path.extname(filePath).toLowerCase() === '.cs' ? new vscode.ThemeIcon("file-code") : new vscode.ThemeIcon("file");
     // open on double click? handled by child items commands
   }
 }
