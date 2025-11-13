@@ -52,7 +52,7 @@ export function activate(context: vscode.ExtensionContext) {
       async (item: FileTreeItem) => {
         if (!item || !item.filePath) return;
         await vscode.env.clipboard.writeText(item.filePath);
-        vscode.window.showInformationMessage("DotNetPrune: File path copied to clipboard");
+        vscode.window.showInformationMessage(`DotNetPrune: ${item.filePath} path copied to clipboard`);
       }
     ),
     vscode.commands.registerCommand(
@@ -60,7 +60,7 @@ export function activate(context: vscode.ExtensionContext) {
       async (item: ProjectTreeItem) => {
         if (!item || !item.label) return;
         await vscode.env.clipboard.writeText(item.label);
-        vscode.window.showInformationMessage("DotNetPrune: Project name copied to clipboard");
+        vscode.window.showInformationMessage(`DotNetPrune: ${item.label} name copied to clipboard`);
       }
     )
   );
@@ -234,7 +234,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     const run = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: "DotNetPrune: running analysis",
+        title: "DotNetPrune:",
         cancellable: true,
       },
       async (progress, token) => {
@@ -507,9 +507,11 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
           // If project name contains path separators, extract just the project name
           if (projectName.includes(path.sep)) {
             projectName = path.basename(projectName);
-            // Remove extension if present (for .csproj files)
+            // Clean up any trailing unwanted characters (like ))
+            projectName = projectName.replace(/\)$/, '');
+            // Remove .csproj extension if present
             if (projectName.endsWith('.csproj')) {
-              projectName = path.basename(projectName, '.csproj');
+              projectName = projectName.slice(0, -7);
             }
           }
         }
