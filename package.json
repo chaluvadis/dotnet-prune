@@ -39,6 +39,14 @@
       {
         "command": "dotnetprune.openFinding",
         "title": "DotNetPrune: Open Finding"
+      },
+      {
+        "command": "dotnetprune.copyFilePath",
+        "title": "Copy File Path"
+      },
+      {
+        "command": "dotnetprune.copyProjectName",
+        "title": "Copy Project Name"
       }
     ],
     "configuration": {
@@ -63,13 +71,27 @@
           "icon": "./resources/icon.png"
         }
       ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "dotnetprune.copyFilePath",
+          "when": "view == dotnetprune-findings && viewItem == file",
+          "group": "7_modification@1"
+        },
+        {
+          "command": "dotnetprune.copyProjectName",
+          "when": "view == dotnetprune-findings && viewItem == project",
+          "group": "7_modification@1"
+        }
+      ]
     }
   },
   "scripts": {
     "compile": "node esbuild.js",
     "clean": "rm -rf dotnet-prune-vscode-0.0.1.vsix",
     "dotnet:publish": "dotnet publish ./FindUnused/FindUnused.csproj --output ./dist/FindUnused/",
-    "package": "pnpm compile && pnpm dotnet:publish && vsce package"
+    "package": "pnpm clean && pnpm compile && pnpm dotnet:publish && vsce package"
   },
   "devDependencies": {
     "@types/vscode": "^1.105.0",

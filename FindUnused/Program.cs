@@ -1,4 +1,4 @@
-namespace FindUnusedConsole;
+namespace FindUnused;
 
 /// <summary>
 /// Result object for analysis operations
@@ -16,14 +16,34 @@ public record AnalysisResult
 /// </summary>
 public record Finding
 {
+    // Project display "Name (path)"
     public string Project { get; set; } = string.Empty;
+
+    // FilePath now contains the full absolute path to the file (for extension-level navigation)
     public string FilePath { get; set; } = string.Empty;
+
+    // FilePathDisplay is the project/solution-relative display path (human readable)
+    public string FilePathDisplay { get; set; } = string.Empty;
+
+    // New DisplayName intended for quick UI display: filename only (as shown in Solution Explorer)
+    public string DisplayName { get; set; } = string.Empty;
+
+    // New ProjectFilePath: absolute path to the project (.csproj) that contains the file
+    public string ProjectFilePath { get; set; } = string.Empty;
+
     public int Line { get; set; }
     public string SymbolKind { get; set; } = string.Empty;
     public string ContainingType { get; set; } = string.Empty;
     public string SymbolName { get; set; } = string.Empty;
     public string Accessibility { get; set; } = string.Empty;
     public string Remarks { get; set; } = string.Empty;
+
+    // Diagnostic fields embedded into JSON per finding
+    public string DeclaredProject { get; set; } = string.Empty;
+    public string FallbackProject { get; set; } = string.Empty;
+
+    // Icon for quick visual identification
+    public string Icon { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -31,6 +51,9 @@ public record Finding
 /// </summary>
 public class FindUnusedAnalyzer
 {
+    // Diagnostic mode: when true, prints extra diagnostic information per finding
+    public static bool DiagnosticMode { get; set; } = false;
+
     private static JsonSerializerOptions GetOptions() => new() { WriteIndented = true };
 
     /// <summary>
@@ -105,12 +128,6 @@ public class FindUnusedAnalyzer
                     findings.AddRange(arr);
                 }
             }
-            if (!string.IsNullOrWhiteSpace(targetPath))
-            {
-                // Finalize analysis
-                progress?.Report($"\nAnalysis complete. Findings: {findings.Count}");
-                await WriteReportAsync(findings);
-            }
             return new AnalysisResult
             {
                 Success = true,
@@ -127,15 +144,6 @@ public class FindUnusedAnalyzer
             };
         }
     }
-
-    private static async Task WriteReportAsync(List<Finding> findings)
-    {
-        var json = JsonSerializer.Serialize(findings, GetOptions());
-
-        // Output JSON to stdout for extension consumption
-        Console.WriteLine(json);
-    }
-
     private static bool IsReferenceInSolutionSource(Location loc, Solution solution, HashSet<ProjectId> solutionProjectIds)
     {
         if (loc == null || !loc.IsInSource) return false;
@@ -157,6 +165,188 @@ public class FindUnusedAnalyzer
         progress?.Report($"Projects: {solution.Projects.Count()}");
         var solutionProjectIds = new HashSet<ProjectId>(solution.Projects.Select(p => p.Id));
         return (solution, solutionProjectIds);
+    }
+
+    /// <summary>
+    /// Determine if the given file path is located inside an excluded folder (NuGet/global packages, bin, obj, debug).
+    /// This is a lightweight textual check intentionally tolerant for cross-platform separators.
+    /// </summary>
+    private static bool IsPathExcluded(string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath)) return false;
+        var low = filePath.Replace('\\', '/').ToLowerInvariant();
+
+        // indicators of paths we want to ignore
+        var indicators = new[]
+        {
+            "/.nuget/packages/", // global NuGet cache
+            "/.nuget/",          // any .nuget folder
+            "/packages/",        // legacy packages folder
+            "/bin/",             // build output
+            "/obj/",             // intermediate output
+            "/debug/",           // debug output folder (e.g. bin/Debug)
+            "/release/"          // optionally ignore release outputs too (safe to include)
+        };
+
+        return indicators.Any(ind => low.Contains(ind));
+    }
+
+    private static bool DocumentIsExcluded(Document? doc)
+    {
+        if (doc == null) return false;
+        return IsPathExcluded(doc.FilePath);
+    }
+
+    private static bool SourceTreeIsExcluded(SyntaxTree? tree)
+    {
+        if (tree == null) return false;
+        return IsPathExcluded(tree.FilePath);
+    }
+
+    /// <summary>
+    /// Get a file path for display in findings. Prefer the project's virtual folder structure (Document.Folders),
+    /// otherwise make the path relative to the project folder (Directory of the .csproj), then relative to the solution,
+    /// and finally fall back to the file name or the full path if needed.
+    /// This attempts to replicate how Visual Studio shows files under a project in Solution Explorer.
+    /// Returns the display path (project-relative / virtual folder path).
+    /// </summary>
+    private static string GetDisplayPathForDocument(Document? doc, SyntaxTree? tree, Project? project, Solution? solution)
+    {
+        // If we have a Roslyn Document and it has virtual Folders, prefer that (this is how VS organizes files logically)
+        try
+        {
+            if (doc != null)
+            {
+                if (doc.Folders != null && doc.Folders.Count > 0)
+                {
+                    var folderPart = Path.Combine(doc.Folders.ToArray());
+                    var fileName = !string.IsNullOrEmpty(doc.FilePath) ? Path.GetFileName(doc.FilePath) : "(in-memory)";
+                    return Path.Combine(folderPart, fileName);
+                }
+
+                // If the file physically sits inside the project directory, show relative path to the project file
+                if (!string.IsNullOrEmpty(doc.FilePath) && project?.FilePath != null)
+                {
+                    var projectDir = Path.GetDirectoryName(project.FilePath) ?? "";
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(projectDir) && Path.GetFullPath(doc.FilePath).StartsWith(Path.GetFullPath(projectDir), StringComparison.OrdinalIgnoreCase))
+                        {
+                            var rel = Path.GetRelativePath(projectDir, doc.FilePath);
+                            return rel.Replace('/', Path.DirectorySeparatorChar);
+                        }
+                    }
+                    catch
+                    {
+                        // fall back if any path operations fail
+                    }
+                }
+
+                // If file is not inside project, try relative to solution directory
+                if (!string.IsNullOrEmpty(doc.FilePath) && solution?.FilePath != null)
+                {
+                    var solutionDir = Path.GetDirectoryName(solution.FilePath) ?? "";
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(solutionDir) && Path.GetFullPath(doc.FilePath).StartsWith(Path.GetFullPath(solutionDir), StringComparison.OrdinalIgnoreCase))
+                        {
+                            var rel = Path.GetRelativePath(solutionDir, doc.FilePath);
+                            return rel.Replace('/', Path.DirectorySeparatorChar);
+                        }
+                    }
+                    catch
+                    {
+                        // ignore and fall back
+                    }
+                }
+
+                // Otherwise, if doc has a FilePath use only the filename (common for linked files)
+                if (!string.IsNullOrEmpty(doc.FilePath))
+                    return Path.GetFileName(doc.FilePath);
+            }
+
+            // Fallback: if a syntax tree exists (e.g., when symbol location provided) use similar logic
+            if (tree != null && !string.IsNullOrEmpty(tree.FilePath))
+            {
+                var filePath = tree.FilePath;
+                if (project?.FilePath != null)
+                {
+                    var projectDir = Path.GetDirectoryName(project.FilePath) ?? "";
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(projectDir) && Path.GetFullPath(filePath).StartsWith(Path.GetFullPath(projectDir), StringComparison.OrdinalIgnoreCase))
+                        {
+                            var rel = Path.GetRelativePath(projectDir, filePath);
+                            return rel.Replace('/', Path.DirectorySeparatorChar);
+                        }
+                    }
+                    catch { }
+                }
+                if (solution?.FilePath != null)
+                {
+                    var solutionDir = Path.GetDirectoryName(solution.FilePath) ?? "";
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(solutionDir) && Path.GetFullPath(filePath).StartsWith(Path.GetFullPath(solutionDir), StringComparison.OrdinalIgnoreCase))
+                        {
+                            var rel = Path.GetRelativePath(solutionDir, filePath);
+                            return rel.Replace('/', Path.DirectorySeparatorChar);
+                        }
+                    }
+                    catch { }
+                }
+
+                return Path.GetFileName(filePath);
+            }
+        }
+        catch
+        {
+            // keep fallback behavior below
+        }
+
+        return "(generated)";
+    }
+
+    /// <summary>
+    /// Compute a short DisplayName (filename) from a document/tree for easy UI display.
+    /// Falls back to the last path segment or "(generated)".
+    /// </summary>
+    private static string GetDisplayNameForDocument(Document? doc, SyntaxTree? tree)
+    {
+        try
+        {
+            if (doc != null && !string.IsNullOrEmpty(doc.FilePath))
+                return Path.GetFileName(doc.FilePath);
+            if (tree != null && !string.IsNullOrEmpty(tree.FilePath))
+                return Path.GetFileName(tree.FilePath);
+        }
+        catch { /* ignore path errors */ }
+
+        return "(generated)";
+    }
+
+    /// <summary>
+    /// Get an absolute file path (full path) for the given document/tree if available.
+    /// Falls back to null if not available.
+    /// </summary>
+    private static string? GetFullPathForDocument(Document? doc, SyntaxTree? tree)
+    {
+        if (doc != null && !string.IsNullOrEmpty(doc.FilePath))
+            return Path.GetFullPath(doc.FilePath);
+        if (tree != null && !string.IsNullOrEmpty(tree.FilePath))
+            return Path.GetFullPath(tree.FilePath);
+        return null;
+    }
+
+    /// <summary>
+    /// Get absolute project file path if available.
+    /// </summary>
+    private static string? GetProjectFilePath(Project? project, Document? doc)
+    {
+        // prefer project.FilePath, else try doc.Project.FilePath
+        if (project?.FilePath != null) return Path.GetFullPath(project.FilePath);
+        if (doc?.Project?.FilePath != null) return Path.GetFullPath(doc.Project.FilePath);
+        return null;
     }
 
     private static async Task<Dictionary<Project, List<INamedTypeSymbol>>> BuildProjectDeclaredTypesMapAsync(
@@ -231,6 +421,7 @@ public class FindUnusedAnalyzer
                 {
                     var typeUsageFindings = await AnalyzeTypeUsageAsync(
                         type,
+                        project,
                         solution,
                         solutionProjectIds,
                         isReferenceInSolutionSource,
@@ -289,8 +480,11 @@ public class FindUnusedAnalyzer
         if (tAcc == Accessibility.Public && !includePublic) return (findings, typeHasReferencedMember);
         if (tAcc == Accessibility.Internal && !includeInternal && tAcc != Accessibility.Private) return (findings, typeHasReferencedMember);
         if (tAcc == Accessibility.Protected || tAcc == Accessibility.ProtectedOrInternal) return (findings, typeHasReferencedMember);
-        var defTypeLocs = type.Locations.Where(l => l.IsInSource).ToList();
-        if (defTypeLocs.Count == 0) return (findings, typeHasReferencedMember); // nothing in source to analyze
+
+        // Consider only declaration locations that are not excluded (bin/obj/nuget/packages/debug)
+        var defTypeLocs = type.Locations.Where(l => l.IsInSource && !SourceTreeIsExcluded(l.SourceTree)).ToList();
+        if (defTypeLocs.Count == 0) return (findings, typeHasReferencedMember); // nothing in source to analyze (or all declarations excluded)
+
         // Analyze members first and record member-level usage
         foreach (var member in type.GetMembers())
         {
@@ -298,7 +492,12 @@ public class FindUnusedAnalyzer
             {
                 if (member.IsImplicitlyDeclared) continue;
                 var defLoc = GetSourceLocation(member);
+
+                // Skip if the member's source file is in an excluded path
+                if (defLoc != null && SourceTreeIsExcluded(defLoc.SourceTree)) continue;
+
                 if (excludeGenerated && defLoc != null && IsGenerated(defLoc.SourceTree)) continue;
+
                 if (member is IMethodSymbol method)
                 {
                     var (methodFindings, memberReferenced) = await AnalyzeMethodAsync(
@@ -332,6 +531,27 @@ public class FindUnusedAnalyzer
         return (findings, typeHasReferencedMember);
     }
 
+    private static string BuildProjectDisplayNameFrom(Project? fallbackProject, Document? doc)
+    {
+        var name = doc?.Project?.Name ?? fallbackProject?.Name ?? "Unknown";
+        var path = doc?.Project?.FilePath ?? fallbackProject?.FilePath ?? "(unknown)";
+        return $"{name} ({path})";
+    }
+
+    private static string GetIconForSymbolKind(string symbolKind)
+    {
+        // Use simple emoji icons for quick visual identification. Adjust as you prefer.
+        return symbolKind switch
+        {
+            "Type" => "📦",
+            "Method" => "🔧",
+            "Property" => "🔑",
+            "Field" => "🧩",
+            "Parameter" => "🎯",
+            _ => "❓"
+        };
+    }
+
     private static async Task<(List<Finding> findings, bool referenced)> AnalyzeMethodAsync(
         IMethodSymbol method,
         INamedTypeSymbol type,
@@ -358,7 +578,21 @@ public class FindUnusedAnalyzer
         if (acc == Accessibility.Protected || acc == Accessibility.ProtectedOrInternal) return (findings, referenced);
         var entry = compilation.GetEntryPoint(CancellationToken.None);
         if (entry != null && SymbolEqualityComparer.Default.Equals(entry, method)) return (findings, referenced);
+        // Skip API controller methods and test methods as they are entry points and should not be considered unused
+        if (IsEntryPointMethod(method, type))
+        {
+            return (findings, false); // Return referenced=true to indicate it's an entry point
+        }
+
+        if (IsTestMethod(method, type))
+        {
+            return (findings, false); // Return referenced=true to indicate it's a test method
+        }
         var defLoc = GetSourceLocation(method);
+
+        // Skip if definition is in an excluded folder
+        if (defLoc != null && SourceTreeIsExcluded(defLoc.SourceTree)) return (findings, referenced);
+
         if (excludeGenerated && defLoc != null && IsGenerated(defLoc.SourceTree)) return (findings, referenced);
         // Find references across the solution
         var references = await SymbolFinder.FindReferencesAsync(method, solution);
@@ -375,23 +609,76 @@ public class FindUnusedAnalyzer
                 if (!isDefinitionLocation) refCount++;
             }
         }
+
+        // If no direct references found, check if this method implements an interface method
+        if (refCount == 0)
+        {
+            var interfaceMethod = GetImplementedInterfaceMethod(method, type);
+            if (interfaceMethod != null)
+            {
+                var interfaceRefs = await SymbolFinder.FindReferencesAsync(interfaceMethod, solution);
+                foreach (var rr in interfaceRefs)
+                {
+                    foreach (var loc in rr.Locations)
+                    {
+                        if (!isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds)) continue;
+                        bool isDefinitionLocation = interfaceMethod.Locations.Where(l => l.IsInSource).Any(d =>
+                            d.SourceTree == loc.Location.SourceTree &&
+                            d.SourceSpan.Equals(loc.Location.SourceSpan));
+                        if (!isDefinitionLocation) refCount++;
+                    }
+                }
+            }
+        }
+
         if (refCount > 0)
             referenced = true;
         else
         {
             var (line, _) = defLoc != null ? GetLinePosition(defLoc) : (-1, -1);
+            Document? doc = defLoc != null ? solution.GetDocument(defLoc.SourceTree) : null;
+            string projectDisplay = BuildProjectDisplayNameFrom(project, doc);
+
+            // File path displayed relative to project/solution or using virtual folder structure in Project
+            string filePathDisplay = GetDisplayPathForDocument(doc, defLoc?.SourceTree, project, solution);
+            string displayName = GetDisplayNameForDocument(doc, defLoc?.SourceTree);
+
+            // Full path for extension-level use
+            string fullPath = GetFullPathForDocument(doc, defLoc?.SourceTree) ?? "(generated)";
+
+            // Project file path (absolute) for extension-level use
+            string projectFilePath = GetProjectFilePath(project, doc) ?? "(unknown)";
+
+            string declaredProject = doc?.Project?.Name ?? "(null)";
+            string fallbackProject = project?.Name ?? "(null)";
+            string icon = GetIconForSymbolKind("Method");
+
+            // Diagnostic logging when doc==null
+            if (DiagnosticMode)
+            {
+                progress?.Report($"[Diagnostic] Method finding: declaredProject={declaredProject}, fallbackProject={fallbackProject}, declarationFileDisplay={filePathDisplay}, fullPath={fullPath}, projectFile={projectFilePath}");
+                if (doc == null)
+                    progress?.Report($"[Diagnostic] declaration document for method not found; falling back to project.Name '{fallbackProject}'");
+            }
+
             findings.Add(new Finding
             {
-                Project = project.Name,
-                FilePath = defLoc?.SourceTree?.FilePath ?? "(generated)",
+                Project = projectDisplay,
+                FilePath = fullPath,
+                FilePathDisplay = filePathDisplay,
+                DisplayName = displayName,
+                ProjectFilePath = projectFilePath,
                 Line = line,
                 SymbolKind = "Method",
                 ContainingType = type.ToDisplayString(),
                 SymbolName = method.ToDisplayString(),
                 Accessibility = method.DeclaredAccessibility.ToString(),
-                Remarks = "No references found in solution source"
+                Remarks = "No references found in solution source",
+                DeclaredProject = declaredProject,
+                FallbackProject = fallbackProject,
+                Icon = icon
             });
-            progress?.Report($"    Unused method: {type.ToDisplayString()}.{method.Name} [{method.DeclaredAccessibility}] at {defLoc?.SourceTree?.FilePath}:{line}");
+            progress?.Report($"    Unused method: {type.ToDisplayString()}.{method.Name} [{method.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
         // Analyze method parameters
         var parameterFindings = await AnalyzeMethodParametersAsync(method, type, project, solution, solutionProjectIds, isReferenceInSolutionSource, progress);
@@ -402,7 +689,7 @@ public class FindUnusedAnalyzer
     private static async Task<List<Finding>> AnalyzeMethodParametersAsync(
         IMethodSymbol method,
         INamedTypeSymbol type,
-        Project project,
+        Project? project,
         Solution solution,
         HashSet<ProjectId> solutionProjectIds,
         Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource,
@@ -413,7 +700,7 @@ public class FindUnusedAnalyzer
         {
             if (param.RefKind != RefKind.None) continue;
             var paramRefs = await SymbolFinder.FindReferencesAsync(param, solution);
-            var paramDefLocs = param.Locations.Where(l => l.IsInSource).ToList();
+            var paramDefLocs = param.Locations.Where(l => l.IsInSource && !SourceTreeIsExcluded(l.SourceTree)).ToList();
             int paramRefCount = 0;
             foreach (var rr in paramRefs)
             {
@@ -428,18 +715,41 @@ public class FindUnusedAnalyzer
             {
                 var pLoc = paramDefLocs.FirstOrDefault();
                 var (pline, _) = pLoc != null ? GetLinePosition(pLoc) : (-1, -1);
+                Document? doc = pLoc != null ? solution.GetDocument(pLoc.SourceTree) : null;
+                string projectDisplay = BuildProjectDisplayNameFrom(project, doc);
+                string filePathDisplay = GetDisplayPathForDocument(doc, pLoc?.SourceTree, project, solution);
+                string displayName = GetDisplayNameForDocument(doc, pLoc?.SourceTree);
+                string fullPath = GetFullPathForDocument(doc, pLoc?.SourceTree) ?? "(generated)";
+                string projectFilePath = GetProjectFilePath(project, doc) ?? "(unknown)";
+                string declaredProject = doc?.Project?.Name ?? "(null)";
+                string fallbackProject = project?.Name ?? "(null)";
+                string icon = GetIconForSymbolKind("Parameter");
+
+                if (DiagnosticMode)
+                {
+                    progress?.Report($"[Diagnostic] Parameter finding: declaredProject={declaredProject}, fallbackProject={fallbackProject}, declarationFileDisplay={filePathDisplay}, fullPath={fullPath}, projectFile={projectFilePath}");
+                    if (doc == null)
+                        progress?.Report($"[Diagnostic] declaration document for parameter not found; falling back to project.Name '{fallbackProject}'");
+                }
+
                 findings.Add(new Finding
                 {
-                    Project = project.Name,
-                    FilePath = pLoc?.SourceTree?.FilePath ?? "(generated)",
+                    Project = projectDisplay,
+                    FilePath = fullPath,
+                    FilePathDisplay = filePathDisplay,
+                    DisplayName = displayName,
+                    ProjectFilePath = projectFilePath,
                     Line = pline,
                     SymbolKind = "Parameter",
                     ContainingType = type.ToDisplayString(),
                     SymbolName = $"{method.ToDisplayString()} :: {param.Name}",
                     Accessibility = method.DeclaredAccessibility.ToString(),
-                    Remarks = "Parameter never referenced in solution source"
+                    Remarks = "Parameter never referenced in solution source",
+                    DeclaredProject = declaredProject,
+                    FallbackProject = fallbackProject,
+                    Icon = icon
                 });
-                progress?.Report($"      Unused parameter: {method.ToDisplayString()} :: {param.Name} at {pLoc?.SourceTree?.FilePath}:{pline}");
+                progress?.Report($"      Unused parameter: {method.ToDisplayString()} :: {param.Name} at {filePathDisplay}:{pline}");
             }
         }
         return findings;
@@ -464,6 +774,10 @@ public class FindUnusedAnalyzer
         if (acc != Accessibility.Private && !includeInternal && !includePublic) return (findings, referenced);
         if (prop.IsOverride || prop.ExplicitInterfaceImplementations.Any()) return (findings, referenced);
         var defLocProp = GetSourceLocation(prop);
+
+        // Skip if property declaration is in an excluded folder
+        if (defLocProp != null && SourceTreeIsExcluded(defLocProp.SourceTree)) return (findings, referenced);
+
         if (excludeGenerated && defLocProp != null && IsGenerated(defLocProp.SourceTree)) return (findings, referenced);
         var refs = await SymbolFinder.FindReferencesAsync(prop, solution);
         var defLocs = prop.Locations.Where(l => l.IsInSource).ToList();
@@ -484,18 +798,41 @@ public class FindUnusedAnalyzer
         else
         {
             var (line, _) = defLocProp != null ? GetLinePosition(defLocProp) : (-1, -1);
+            Document? doc = defLocProp != null ? solution.GetDocument(defLocProp.SourceTree) : null;
+            string projectDisplay = BuildProjectDisplayNameFrom(project, doc);
+            string filePathDisplay = GetDisplayPathForDocument(doc, defLocProp?.SourceTree, project, solution);
+            string displayName = GetDisplayNameForDocument(doc, defLocProp?.SourceTree);
+            string fullPath = GetFullPathForDocument(doc, defLocProp?.SourceTree) ?? "(generated)";
+            string projectFilePath = GetProjectFilePath(project, doc) ?? "(unknown)";
+            string declaredProject = doc?.Project?.Name ?? "(null)";
+            string fallbackProject = project?.Name ?? "(null)";
+            string icon = GetIconForSymbolKind("Property");
+
+            if (DiagnosticMode)
+            {
+                progress?.Report($"[Diagnostic] Property finding: declaredProject={declaredProject}, fallbackProject={fallbackProject}, declarationFileDisplay={filePathDisplay}, fullPath={fullPath}, projectFile={projectFilePath}");
+                if (doc == null)
+                    progress?.Report($"[Diagnostic] declaration document for property not found; falling back to project.Name '{fallbackProject}'");
+            }
+
             findings.Add(new Finding
             {
-                Project = project.Name,
-                FilePath = defLocProp?.SourceTree?.FilePath ?? "(generated)",
+                Project = projectDisplay,
+                FilePath = fullPath,
+                FilePathDisplay = filePathDisplay,
+                DisplayName = displayName,
+                ProjectFilePath = projectFilePath,
                 Line = line,
                 SymbolKind = "Property",
                 ContainingType = type.ToDisplayString(),
                 SymbolName = prop.ToDisplayString(),
                 Accessibility = prop.DeclaredAccessibility.ToString(),
-                Remarks = "No references found in solution source"
+                Remarks = "No references found in solution source",
+                DeclaredProject = declaredProject,
+                FallbackProject = fallbackProject,
+                Icon = icon
             });
-            progress?.Report($"    Unused property: {type.ToDisplayString()}.{prop.Name} [{prop.DeclaredAccessibility}] at {defLocProp?.SourceTree?.FilePath}:{line}");
+            progress?.Report($"    Unused property: {type.ToDisplayString()}.{prop.Name} [{prop.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
         return (findings, referenced);
     }
@@ -518,6 +855,10 @@ public class FindUnusedAnalyzer
         var acc = field.DeclaredAccessibility;
         if (acc != Accessibility.Private && !includeInternal && !includePublic) return (findings, referenced);
         var defLocField = GetSourceLocation(field);
+
+        // Skip if field declaration is in an excluded folder
+        if (defLocField != null && SourceTreeIsExcluded(defLocField.SourceTree)) return (findings, referenced);
+
         if (excludeGenerated && defLocField != null && IsGenerated(defLocField.SourceTree)) return (findings, referenced);
         var refs = await SymbolFinder.FindReferencesAsync(field, solution);
         var defLocs = field.Locations.Where(l => l.IsInSource).ToList();
@@ -538,24 +879,48 @@ public class FindUnusedAnalyzer
         else
         {
             var (line, _) = defLocField != null ? GetLinePosition(defLocField) : (-1, -1);
+            Document? doc = defLocField != null ? solution.GetDocument(defLocField.SourceTree) : null;
+            string projectDisplay = BuildProjectDisplayNameFrom(project, doc);
+            string filePathDisplay = GetDisplayPathForDocument(doc, defLocField?.SourceTree, project, solution);
+            string displayName = GetDisplayNameForDocument(doc, defLocField?.SourceTree);
+            string fullPath = GetFullPathForDocument(doc, defLocField?.SourceTree) ?? "(generated)";
+            string projectFilePath = GetProjectFilePath(project, doc) ?? "(unknown)";
+            string declaredProject = doc?.Project?.Name ?? "(null)";
+            string fallbackProject = project?.Name ?? "(null)";
+            string icon = GetIconForSymbolKind("Field");
+
+            if (DiagnosticMode)
+            {
+                progress?.Report($"[Diagnostic] Field finding: declaredProject={declaredProject}, fallbackProject={fallbackProject}, declarationFileDisplay={filePathDisplay}, fullPath={fullPath}, projectFile={projectFilePath}");
+                if (doc == null)
+                    progress?.Report($"[Diagnostic] declaration document for field not found; falling back to project.Name '{fallbackProject}'");
+            }
+
             findings.Add(new Finding
             {
-                Project = project.Name,
-                FilePath = defLocField?.SourceTree?.FilePath ?? "(generated)",
+                Project = projectDisplay,
+                FilePath = fullPath,
+                FilePathDisplay = filePathDisplay,
+                DisplayName = displayName,
+                ProjectFilePath = projectFilePath,
                 Line = line,
                 SymbolKind = "Field",
                 ContainingType = type.ToDisplayString(),
                 SymbolName = field.ToDisplayString(),
                 Accessibility = field.DeclaredAccessibility.ToString(),
-                Remarks = "No references found in solution source"
+                Remarks = "No references found in solution source",
+                DeclaredProject = declaredProject,
+                FallbackProject = fallbackProject,
+                Icon = icon
             });
-            progress?.Report($"    Unused field: {type.ToDisplayString()}.{field.Name} [{field.DeclaredAccessibility}] at {defLocField?.SourceTree?.FilePath}:{line}");
+            progress?.Report($"    Unused field: {type.ToDisplayString()}.{field.Name} [{field.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
         return (findings, referenced);
     }
 
     private static async Task<List<Finding>> AnalyzeTypeUsageAsync(
         INamedTypeSymbol type,
+        Project project,
         Solution solution,
         HashSet<ProjectId> solutionProjectIds,
         Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource,
@@ -571,8 +936,11 @@ public class FindUnusedAnalyzer
             type.TypeKind == TypeKind.Struct ||
             isRecord;
         if (!considerType) return findings;
-        var defTypeLocs = type.Locations.Where(l => l.IsInSource).ToList();
+
+        // Consider only declaration locations that are not in excluded path folders
+        var defTypeLocs = type.Locations.Where(l => l.IsInSource && !SourceTreeIsExcluded(l.SourceTree)).ToList();
         if (defTypeLocs.Count == 0) return findings;
+
         // For interfaces, additionally check for implementations in the solution
         bool foundUsage = false;
         if (type.TypeKind == TypeKind.Interface)
@@ -580,12 +948,14 @@ public class FindUnusedAnalyzer
             foundUsage = await CheckInterfaceImplementationsAsync(type, solution, isReferenceInSolutionSource, solutionProjectIds);
             if (foundUsage) return findings;
         }
+
         // For classes, check derived classes (subclasses) inside the solution
         if (!foundUsage && type.TypeKind == TypeKind.Class)
         {
             foundUsage = await CheckDerivedClassesAsync(type, solution, isReferenceInSolutionSource, solutionProjectIds);
             if (foundUsage) return findings;
         }
+
         // General type references (variable declarations, cast, typeof, generics, attributes, etc.)
         var typeReferences = await SymbolFinder.FindReferencesAsync(type, solution);
         int typeRefCount = 0;
@@ -601,30 +971,58 @@ public class FindUnusedAnalyzer
                 if (!isDefinitionLocation) typeRefCount++;
             }
         }
+
         // Fallback: do a manual semantic scan if SymbolFinder didn't find any references
         if (typeRefCount == 0)
         {
             var manualFound = await ManualSemanticSearchForTypeAsync(type, solution, solutionProjectIds);
             if (manualFound) typeRefCount = 1;
         }
+
         if (typeRefCount == 0)
         {
             var loc = defTypeLocs.FirstOrDefault();
             var (line, _) = loc != null ? GetLinePosition(loc) : (-1, -1);
             var kind = isRecord ? "Record" : type.TypeKind.ToString();
+
+            // Try to determine the project name from the declaration document if possible
+            Document? doc = loc?.SourceTree != null ? solution.GetDocument(loc.SourceTree) : null;
+            string projectDisplay = BuildProjectDisplayNameFrom(project, doc);
+            string filePathDisplay = GetDisplayPathForDocument(doc, loc?.SourceTree, project, solution);
+            string displayName = GetDisplayNameForDocument(doc, loc?.SourceTree);
+            string fullPath = GetFullPathForDocument(doc, loc?.SourceTree) ?? "(generated)";
+            string projectFilePath = GetProjectFilePath(project, doc) ?? "(unknown)";
+            string declaredProject = doc?.Project?.Name ?? "(null)";
+            string fallbackProject = project?.Name ?? "(null)";
+            string icon = GetIconForSymbolKind("Type");
+
+            if (DiagnosticMode)
+            {
+                progress?.Report($"[Diagnostic] Type finding: declaredProject={declaredProject}, fallbackProject={fallbackProject}, declarationFileDisplay={filePathDisplay}, fullPath={fullPath}, projectFile={projectFilePath}");
+                if (doc == null)
+                    progress?.Report($"[Diagnostic] declaration document for type not found; falling back to project.Name '{fallbackProject}'");
+            }
+
             findings.Add(new Finding
             {
-                Project = type.ContainingNamespace?.Name ?? "Unknown",
-                FilePath = loc?.SourceTree?.FilePath ?? "(generated)",
+                Project = projectDisplay,
+                FilePath = fullPath,
+                FilePathDisplay = filePathDisplay,
+                DisplayName = displayName,
+                ProjectFilePath = projectFilePath,
                 Line = line,
                 SymbolKind = "Type",
                 ContainingType = type.ContainingType?.ToDisplayString() ?? "",
                 SymbolName = type.ToDisplayString(),
                 Accessibility = type.DeclaredAccessibility.ToString(),
-                Remarks = $"No references found in solution source (TypeKind={kind})"
+                Remarks = $"No references found in solution source (TypeKind={kind})",
+                DeclaredProject = declaredProject,
+                FallbackProject = fallbackProject,
+                Icon = icon
             });
-            progress?.Report($"    Unused type: {type.ToDisplayString()} (Kind={kind}) [{type.DeclaredAccessibility}] at {loc?.SourceTree?.FilePath}:{line}");
+            progress?.Report($"    Unused type: {type.ToDisplayString()} (Kind={kind}) [{type.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
+
         return findings;
     }
 
@@ -646,7 +1044,7 @@ public class FindUnusedAnalyzer
                 }
                 if (impl is INamedTypeSymbol nt)
                 {
-                    var ntDefLocs = nt.Locations.Where(l => l.IsInSource);
+                    var ntDefLocs = nt.Locations.Where(l => l.IsInSource && !SourceTreeIsExcluded(l.SourceTree));
                     if (ntDefLocs.Any(l => isReferenceInSolutionSource(l, solution, solutionProjectIds)))
                         return true;
                 }
@@ -689,6 +1087,9 @@ public class FindUnusedAnalyzer
         var set = new List<INamedTypeSymbol>();
         foreach (var document in project.Documents)
         {
+            // Skip documents that are in excluded folders (NuGet cache, bin/obj/debug)
+            if (DocumentIsExcluded(document)) continue;
+
             if (!document.SupportsSyntaxTree) continue;
             var root = await document.GetSyntaxRootAsync();
             if (root == null) continue;
@@ -800,6 +1201,7 @@ public class FindUnusedAnalyzer
     /// Scans all source documents in the solution and returns the set of declared namespace names.
     /// - Adds empty string if there are top-level types in the global namespace.
     /// - Adds each NamespaceDeclaration and FileScopedNamespace declaration name.
+    /// Documents located in excluded paths (NuGet packages, bin, obj, debug) are ignored.
     /// </summary>
     private static async Task<HashSet<string>> GetDeclaredNamespacesFromSolutionAsync(Solution solution)
     {
@@ -808,6 +1210,9 @@ public class FindUnusedAnalyzer
         {
             foreach (var document in project.Documents)
             {
+                // Skip documents that are in excluded folders
+                if (DocumentIsExcluded(document)) continue;
+
                 if (!document.SupportsSyntaxTree) continue;
                 var root = await document.GetSyntaxRootAsync();
                 if (root == null) continue;
@@ -837,6 +1242,7 @@ public class FindUnusedAnalyzer
 
     /// <summary>
     /// Manual semantic search fallback for type usages. Scans documents that contain the simple name and uses the semantic model.
+    /// Documents located in excluded paths (NuGet packages, bin, obj, debug) are skipped.
     /// </summary>
     private static async Task<bool> ManualSemanticSearchForTypeAsync(INamedTypeSymbol typeSymbol, Solution solution, HashSet<ProjectId> solutionProjectIds)
     {
@@ -845,6 +1251,7 @@ public class FindUnusedAnalyzer
         {
             foreach (var document in project.Documents)
             {
+                if (DocumentIsExcluded(document)) continue;
                 if (!document.SupportsSyntaxTree) continue;
                 var root = await document.GetSyntaxRootAsync();
                 if (root == null) continue;
@@ -894,147 +1301,193 @@ public class FindUnusedAnalyzer
         }
         return false;
     }
-}
 
-class Program
-{
-    static async Task<int> Main(string[] args)
+    /// <summary>
+    /// Check if a method is in an API controller class
+    /// </summary>
+    private static bool IsApiControllerMethod(INamedTypeSymbol containingType)
     {
-        var argsList = args.ToList();
+        if (containingType == null) return false;
 
-        // Display help if no arguments provided
-        if (argsList.Count == 0 || argsList.Contains("--help") || argsList.Contains("-h"))
+        // Check if the class name ends with "Controller" (common MVC/Web API pattern)
+        if (containingType.Name.EndsWith("Controller", StringComparison.OrdinalIgnoreCase))
         {
-            Console.WriteLine("FindUnused - Analyzes .NET solutions for unused code symbols");
-            Console.WriteLine();
-            Console.WriteLine("Usage:");
-            Console.WriteLine("  dotnet run FindUnused.dll <target-path> [options]");
-            Console.WriteLine();
-            Console.WriteLine("Arguments:");
-            Console.WriteLine("  <target-path>          Path to .slnx, .sln, .csproj file or folder to analyze");
-            Console.WriteLine();
-            Console.WriteLine("Options:");
-            Console.WriteLine("  --include-public       Include public symbols in analysis (default: true)");
-            Console.WriteLine("  --no-public           Exclude public symbols from analysis");
-            Console.WriteLine("  --include-internal     Include internal symbols in analysis (default: true)");
-            Console.WriteLine("  --no-internal         Exclude internal symbols from analysis");
-            Console.WriteLine("  --exclude-generated    Exclude generated code from analysis (default: true)");
-            Console.WriteLine("  --include-generated    Include generated code in analysis");
-            Console.WriteLine("  --verbose             Enable verbose output");
-            Console.WriteLine("  --help, -h            Show help information");
-            Console.WriteLine();
-            Console.WriteLine("Examples:");
-            Console.WriteLine("  dotnet run FindUnused.dll ./MySolution.sln");
-            Console.WriteLine("  dotnet run FindUnused.dll ./MyProject.csproj");
-            Console.WriteLine("  dotnet run FindUnused.dll ./ --no-public --include-internal");
-            return 0;
+            return true;
         }
 
-        // Parse arguments
-        string? targetPath = null;
-        bool includePublic = true;
-        bool includeInternal = true;
-        bool excludeGenerated = true;
-        bool verbose = false;
-
-        for (int i = 0; i < argsList.Count; i++)
+        // Check if the class inherits from Controller, ControllerBase, or has [ApiController] attribute
+        var baseType = containingType.BaseType;
+        while (baseType != null && baseType.SpecialType != SpecialType.System_Object)
         {
-            var arg = argsList[i];
-            switch (arg.ToLowerInvariant())
+            var baseTypeName = baseType.Name.ToLowerInvariant();
+            if (baseTypeName == "controller" ||
+                baseTypeName == "controllerbase" ||
+                baseTypeName == "apicontroller")
             {
-                case "--include-public":
-                case "--public":
-                    includePublic = true;
-                    break;
-                case "--no-public":
-                    includePublic = false;
-                    break;
-                case "--include-internal":
-                case "--internal":
-                    includeInternal = true;
-                    break;
-                case "--no-internal":
-                    includeInternal = false;
-                    break;
-                case "--exclude-generated":
-                case "--no-generated":
-                    excludeGenerated = true;
-                    break;
-                case "--include-generated":
-                case "--generated":
-                    excludeGenerated = false;
-                    break;
-                case "--verbose":
-                case "-v":
-                    verbose = true;
-                    break;
-                default:
-                    // If it doesn't start with --, consider it the target path
-                    if (!arg.StartsWith("--") && targetPath == null)
-                    {
-                        targetPath = arg;
-                    }
-                    break;
+                return true;
+            }
+            baseType = baseType.BaseType;
+        }
+
+        // Check for [ApiController] attribute
+        var apiControllerAttribute = containingType.GetAttributes()
+            .FirstOrDefault(attr => attr.AttributeClass?.Name.Equals("ApiControllerAttribute", StringComparison.OrdinalIgnoreCase) == true);
+
+        if (apiControllerAttribute != null) return true;
+
+        // Check for controller-related HTTP attributes on methods (indicates it's likely a controller)
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a method is a test method
+    /// </summary>
+    private static bool IsTestMethod(IMethodSymbol method, INamedTypeSymbol containingType)
+    {
+        if (method == null) return false;
+
+        // Check for common test framework attributes
+        var testAttributes = new[]
+        {
+        "TestAttribute", "FactAttribute", "TheoryAttribute", "TestMethodAttribute",
+        "TestCaseAttribute", "TestCaseSourceAttribute", "InlineDataAttribute",
+        "ClassDataAttribute", "DynamicDataAttribute"
+    };
+
+        foreach (var attr in method.GetAttributes())
+        {
+            var attrName = attr.AttributeClass?.Name;
+            if (attrName != null && testAttributes.Any(testAttr =>
+                attrName.Equals(testAttr, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
             }
         }
 
-        // Validate target path
-        if (string.IsNullOrWhiteSpace(targetPath))
+        // Check if containing class has test-related attributes
+        if (containingType != null)
         {
-            Console.WriteLine("Error: Target path is required");
-            Console.WriteLine("Use --help for usage information");
-            return 1;
+            var testClassAttributes = new[]
+            {
+            "TestClassAttribute", "TestFixtureAttribute", "TestCategoryAttribute"
+        };
+
+            foreach (var attr in containingType.GetAttributes())
+            {
+                var attrName = attr.AttributeClass?.Name;
+                if (attrName != null && testClassAttributes.Any(testAttr =>
+                    attrName.Equals(testAttr, StringComparison.OrdinalIgnoreCase)))
+                    return true;
+            }
+
+            // Check if class name ends with "Test" or "Tests"
+            var className = containingType.Name;
+            if (className.EndsWith("Test", StringComparison.OrdinalIgnoreCase) ||
+                className.EndsWith("Tests", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
         }
 
-        try
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a method is an entry point (like a controller action)
+    /// </summary>
+    private static bool IsEntryPointMethod(IMethodSymbol method, INamedTypeSymbol containingType)
+    {
+        if (method == null) return false;
+
+        // API Controller methods are entry points
+        if (IsApiControllerMethod(containingType))
         {
-            var progress = verbose ? new Progress<string>(msg => Console.WriteLine($"[Progress] {msg}")) : null;
+            return true;
+        }
 
-            Console.WriteLine($"Starting analysis of: {targetPath}");
-            Console.WriteLine($"Include public: {includePublic}");
-            Console.WriteLine($"Include internal: {includeInternal}");
-            Console.WriteLine($"Exclude generated: {excludeGenerated}");
-            Console.WriteLine();
+        // Check for HTTP-related attributes that indicate web API endpoints
+        var httpAttributes = new[]
+        {
+        "HttpGetAttribute", "HttpPostAttribute", "HttpPutAttribute", "HttpDeleteAttribute",
+        "HttpPatchAttribute", "RouteAttribute", "AcceptVerbsAttribute"
+    };
 
-            var result = await FindUnusedAnalyzer.RunAnalysisAsync(
-                targetPath,
-                includePublic,
-                includeInternal,
-                excludeGenerated,
-                progress);
-
-            if (result.Success)
+        foreach (var attr in method.GetAttributes())
+        {
+            var attrName = attr.AttributeClass?.Name;
+            if (attrName != null && httpAttributes.Any(httpAttr =>
+                attrName.Equals(httpAttr, StringComparison.OrdinalIgnoreCase)))
             {
-                Console.WriteLine($"\nAnalysis completed successfully!");
-                Console.WriteLine($"Total findings: {result.FindingsCount}");
+                return true;
+            }
+        }
 
-                if (result.FindingsCount > 0)
+        return false;
+    }
+
+    /// <summary>
+    /// Get the interface method that this method implements, if any
+    /// </summary>
+    private static IMethodSymbol? GetImplementedInterfaceMethod(IMethodSymbol method, INamedTypeSymbol containingType)
+    {
+        // Check explicit implementations
+        if (method.ExplicitInterfaceImplementations.Any())
+        {
+            return method.ExplicitInterfaceImplementations.First();
+        }
+
+        // Check implicit implementations
+        foreach (var iface in containingType.AllInterfaces)
+        {
+            var candidates = iface.GetMembers().OfType<IMethodSymbol>()
+                .Where(m => m.Name == method.Name &&
+                           SymbolEqualityComparer.Default.Equals(m.ReturnType, method.ReturnType) &&
+                           m.Parameters.Length == method.Parameters.Length &&
+                           m.Parameters.Zip(method.Parameters, (p1, p2) => SymbolEqualityComparer.Default.Equals(p1.Type, p2.Type)).All(x => x));
+            if (candidates.Any())
+            {
+                return candidates.First();
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Main entry point for the FindUnused analyzer
+    /// </summary>
+    public static class Program
+    {
+        public static async Task Main(string[] args)
+        {
+            if (args.Length != 1)
+            {
+                Console.Error.WriteLine("Usage: FindUnused <targetPath>");
+                Environment.Exit(1);
+                return;
+            }
+
+            string targetPath = args[0];
+            try
+            {
+                var result = await FindUnusedAnalyzer.RunAnalysisAsync(targetPath);
+                if (result.Success)
                 {
-                    Console.WriteLine("\nSummary of findings:");
-                    var groupedByType = result.Findings
-                        .GroupBy(f => f.SymbolKind)
-                        .OrderBy(g => g.Key);
-
-                    foreach (var group in groupedByType)
-                    {
-                        Console.WriteLine($"  {group.Key}: {group.Count()}");
-                    }
+                    var json = JsonSerializer.Serialize(result.Findings, new JsonSerializerOptions { WriteIndented = false });
+                    Console.WriteLine(json);
+                    Environment.Exit(0);
                 }
-
-                // Exit with error code if findings were detected
-                return result.FindingsCount > 0 ? 1 : 0;
+                else
+                {
+                    Console.Error.WriteLine($"Analysis failed: {result.ErrorMessage}");
+                    Environment.Exit(1);
+                }
             }
-            else
+            catch (Exception ex)
             {
-                Console.WriteLine($"\nAnalysis failed: {result.ErrorMessage}");
-                return 1;
+                Console.Error.WriteLine($"Unexpected error: {ex.Message}");
+                Environment.Exit(1);
             }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Unexpected error: {ex.Message}");
-            Console.WriteLine($"Stack trace: {ex.StackTrace}");
-            return 1;
         }
     }
 }
