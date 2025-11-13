@@ -59,7 +59,7 @@
         {
           "id": "dotnetprune-views",
           "title": "DotNetPrune",
-          "icon": "resources/gray.png"
+          "icon": "./resources/gray.png"
         }
       ]
     },
