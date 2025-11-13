@@ -27,6 +27,64 @@ type Finding = {
   confidence?: number;
 };
 
+// Helper function to get appropriate icon for symbol kinds
+function getIconForSymbolKind(symbolKind: string): vscode.ThemeIcon {
+  const kind = symbolKind.toLowerCase();
+  
+  // Class-related icons
+  if (kind.includes('class') || kind.includes('type')) {
+    return new vscode.ThemeIcon("symbol-class");
+  }
+  
+  // Interface icons
+  if (kind.includes('interface')) {
+    return new vscode.ThemeIcon("symbol-interface");
+  }
+  
+  // Method icons
+  if (kind.includes('method') || kind.includes('function')) {
+    return new vscode.ThemeIcon("symbol-method");
+  }
+  
+  // Property icons
+  if (kind.includes('property')) {
+    return new vscode.ThemeIcon("symbol-property");
+  }
+  
+  // Field/Variable icons
+  if (kind.includes('field') || kind.includes('variable')) {
+    return new vscode.ThemeIcon("symbol-field");
+  }
+  
+  // Parameter icons
+  if (kind.includes('parameter') || kind.includes('param')) {
+    return new vscode.ThemeIcon("symbol-parameter");
+  }
+  
+  // Enum icons
+  if (kind.includes('enum')) {
+    return new vscode.ThemeIcon("symbol-enum");
+  }
+  
+  // Struct icons
+  if (kind.includes('struct')) {
+    return new vscode.ThemeIcon("symbol-structure");
+  }
+  
+  // Namespace icons
+  if (kind.includes('namespace')) {
+    return new vscode.ThemeIcon("symbol-namespace");
+  }
+  
+  // Event icons
+  if (kind.includes('event')) {
+    return new vscode.ThemeIcon("symbol-event");
+  }
+  
+  // Default warning icon for unknown types
+  return new vscode.ThemeIcon("warning");
+}
+
 export function activate(context: vscode.ExtensionContext) {
   const provider = new UnusedTreeProvider(context);
   const treeView = vscode.window.createTreeView("dotnetprune-findings", {
@@ -102,20 +160,21 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       return;
     }
 
-    // discover solution/csproj files
+    // discover solution/csproj files (excluding build folders)
+    const excludedFolders = "**/{bin,debug,obj,release,nuget,bin/**,debug/**,obj/**,release/**,nuget/**}/**";
     const slnxCandidates = await vscode.workspace.findFiles(
       "**/*.slnx",
-      "**/node_modules/**",
+      `${excludedFolders},**/node_modules/**`,
       10
     );
     const slnCandidates = await vscode.workspace.findFiles(
       "**/*.sln",
-      "**/node_modules/**",
+      `${excludedFolders},**/node_modules/**`,
       10
     );
     const csprojCandidates = await vscode.workspace.findFiles(
       "**/*.csproj",
-      "**/node_modules/**",
+      `${excludedFolders},**/node_modules/**`,
       20
     );
 
@@ -367,14 +426,17 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   private async discoverSolutions(): Promise<void> {
     this.solutionFiles.clear();
 
+    // Exclude build folders when discovering solutions too
+    const excludedFolders = "**/{bin,debug,obj,release,nuget,bin/**,debug/**,obj/**,release/**,nuget/**}/**";
+    
     const slnxFiles = await vscode.workspace.findFiles(
       "**/*.slnx",
-      "**/node_modules/**",
+      `${excludedFolders},**/node_modules/**`,
       10
     );
     const slnFiles = await vscode.workspace.findFiles(
       "**/*.sln",
-      "**/node_modules/**",
+      `${excludedFolders},**/node_modules/**`,
       10
     );
 
@@ -603,7 +665,8 @@ class FindingTreeItem extends TreeItemBase {
   ) {
     super(label, state);
     this.contextValue = "finding";
-    this.iconPath = new vscode.ThemeIcon("warning"); // severity-neutral; you can change based on accessibility/confidence
+    // Use dotnet-specific icon based on symbol kind
+    this.iconPath = getIconForSymbolKind(finding.SymbolKind);
     // The command to open the finding is set by the provider
   }
 }
