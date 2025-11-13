@@ -47,3 +47,4 @@ BuildHost*
 pnpm-lock.yaml
 biome.json
 .kilocodemodes
+FindUnused/

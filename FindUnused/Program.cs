@@ -40,7 +40,6 @@ public class FindUnusedAnalyzer
     /// <param name="includePublic">Include public symbols in analysis</param>
     /// <param name="includeInternal">Include internal symbols in analysis</param>
     /// <param name="excludeGenerated">Exclude generated code from analysis</param>
-    /// <param name="reportPath">Output report file path (null for no file output)</param>
     /// <param name="progress">Optional progress reporter for UI updates</param>
     /// <returns>Analysis results</returns>
     public static async Task<AnalysisResult> RunAnalysisAsync(
@@ -48,7 +47,6 @@ public class FindUnusedAnalyzer
         bool includePublic = true,
         bool includeInternal = true,
         bool excludeGenerated = true,
-        string? reportPath = null,
         IProgress<string>? progress = null)
     {
         // Input validation
@@ -87,11 +85,10 @@ public class FindUnusedAnalyzer
             progress?.Report($"Declared namespaces found by syntax scan: {declaredNamespaces.Count}");
             var projectDeclaredTypes = await BuildProjectDeclaredTypesMapAsync(solution, declaredNamespaces);
             progress?.Report($"Declared namespaces after augmentation: {declaredNamespaces.Count}");
-            // Analyze each project
-            foreach (var project in solution.Projects)
+            // Analyze each project in parallel
+            if (solutionProjectIds != null)
             {
-                if (solutionProjectIds == null) continue; // safety check
-                var projectFindings = await AnalyzeProjectAsync(
+                var projectTasks = solution.Projects.Select(project => AnalyzeProjectAsync(
                     project,
                     solution,
                     solutionProjectIds,
@@ -101,14 +98,18 @@ public class FindUnusedAnalyzer
                     includeInternal,
                     excludeGenerated,
                     IsReferenceInSolutionSource,
-                    progress);
-                findings.AddRange(projectFindings);
+                    progress));
+                var projectFindingsArrays = await Task.WhenAll(projectTasks);
+                foreach (var arr in projectFindingsArrays)
+                {
+                    findings.AddRange(arr);
+                }
             }
             if (!string.IsNullOrWhiteSpace(targetPath))
             {
                 // Finalize analysis
                 progress?.Report($"\nAnalysis complete. Findings: {findings.Count}");
-                await WriteReportAsync(findings, reportPath, progress);
+                await WriteReportAsync(findings);
             }
             return new AnalysisResult
             {
@@ -127,30 +128,12 @@ public class FindUnusedAnalyzer
         }
     }
 
-    private static async Task WriteReportAsync(List<Finding> findings, string? reportPath, IProgress<string>? progress)
+    private static async Task WriteReportAsync(List<Finding> findings)
     {
-        if (!string.IsNullOrEmpty(reportPath))
-        {
-            try
-            {
-                var json = JsonSerializer.Serialize(findings, GetOptions());
-                await File.WriteAllTextAsync(reportPath, json);
-                progress?.Report($"Report written to {reportPath}");
-            }
-            catch (Exception ex)
-            {
-                progress?.Report($"Failed to write report: {ex.Message}");
-            }
-        }
-        else
-        {
-            progress?.Report("\nFindings (sample):");
-            foreach (var f in findings.Take(10))
-            {
-                progress?.Report($"{f.Project} | {f.SymbolKind} | {f.ContainingType} | {f.SymbolName} | {f.Accessibility} | {f.FilePath}:{f.Line} => {f.Remarks}");
-            }
-            progress?.Report("Done.");
-        }
+        var json = JsonSerializer.Serialize(findings, GetOptions());
+
+        // Output JSON to stdout for extension consumption
+        Console.WriteLine(json);
     }
 
     private static bool IsReferenceInSolutionSource(Location loc, Solution solution, HashSet<ProjectId> solutionProjectIds)
@@ -239,6 +222,7 @@ public class FindUnusedAnalyzer
                     includeInternal,
                     excludeGenerated,
                     compilation,
+                    solutionProjectIds,
                     isReferenceInSolutionSource,
                     progress);
                 projectFindings.AddRange(typeFindings);
@@ -290,6 +274,7 @@ public class FindUnusedAnalyzer
         bool includeInternal,
         bool excludeGenerated,
         Compilation compilation,
+        HashSet<ProjectId> solutionProjectIds,
         Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource,
         IProgress<string>? progress)
     {
@@ -318,7 +303,7 @@ public class FindUnusedAnalyzer
                 {
                     var (methodFindings, memberReferenced) = await AnalyzeMethodAsync(
                         method, type, project, solution, includePublic, includeInternal,
-                        excludeGenerated, compilation, isReferenceInSolutionSource, progress);
+                        excludeGenerated, compilation, solutionProjectIds, isReferenceInSolutionSource, progress);
                     findings.AddRange(methodFindings);
                     if (memberReferenced) typeHasReferencedMember = true;
                 }
@@ -326,7 +311,7 @@ public class FindUnusedAnalyzer
                 {
                     var (propertyFindings, memberReferenced) = await AnalyzePropertyAsync(
                         prop, type, project, solution, includeInternal, includePublic,
-                        excludeGenerated, isReferenceInSolutionSource, progress);
+                        excludeGenerated, solutionProjectIds, isReferenceInSolutionSource, progress);
                     findings.AddRange(propertyFindings);
                     if (memberReferenced) typeHasReferencedMember = true;
                 }
@@ -334,7 +319,7 @@ public class FindUnusedAnalyzer
                 {
                     var (fieldFindings, memberReferenced) = await AnalyzeFieldAsync(
                         field, type, project, solution, includeInternal, includePublic,
-                        excludeGenerated, isReferenceInSolutionSource, progress);
+                        excludeGenerated, solutionProjectIds, isReferenceInSolutionSource, progress);
                     findings.AddRange(fieldFindings);
                     if (memberReferenced) typeHasReferencedMember = true;
                 }
@@ -356,6 +341,7 @@ public class FindUnusedAnalyzer
         bool includeInternal,
         bool excludeGenerated,
         Compilation compilation,
+        HashSet<ProjectId> solutionProjectIds,
         Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource,
         IProgress<string>? progress)
     {
@@ -382,7 +368,7 @@ public class FindUnusedAnalyzer
         {
             foreach (var loc in rr.Locations)
             {
-                if (!isReferenceInSolutionSource(loc.Location, solution, new HashSet<ProjectId>())) continue;
+                if (!isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds)) continue;
                 bool isDefinitionLocation = defLocations.Any(d =>
                     d.SourceTree == loc.Location.SourceTree &&
                     d.SourceSpan.Equals(loc.Location.SourceSpan));
@@ -408,7 +394,7 @@ public class FindUnusedAnalyzer
             progress?.Report($"    Unused method: {type.ToDisplayString()}.{method.Name} [{method.DeclaredAccessibility}] at {defLoc?.SourceTree?.FilePath}:{line}");
         }
         // Analyze method parameters
-        var parameterFindings = await AnalyzeMethodParametersAsync(method, type, project, solution, isReferenceInSolutionSource, progress);
+        var parameterFindings = await AnalyzeMethodParametersAsync(method, type, project, solution, solutionProjectIds, isReferenceInSolutionSource, progress);
         findings.AddRange(parameterFindings);
         return (findings, referenced);
     }
@@ -418,6 +404,7 @@ public class FindUnusedAnalyzer
         INamedTypeSymbol type,
         Project project,
         Solution solution,
+        HashSet<ProjectId> solutionProjectIds,
         Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource,
         IProgress<string>? progress)
     {
@@ -432,7 +419,7 @@ public class FindUnusedAnalyzer
             {
                 foreach (var loc in rr.Locations)
                 {
-                    if (!isReferenceInSolutionSource(loc.Location, solution, new HashSet<ProjectId>())) continue;
+                    if (!isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds)) continue;
                     bool isDefLoc = paramDefLocs.Any(d => d.SourceTree == loc.Location.SourceTree && d.SourceSpan.Equals(loc.Location.SourceSpan));
                     if (!isDefLoc) paramRefCount++;
                 }
@@ -466,6 +453,7 @@ public class FindUnusedAnalyzer
         bool includeInternal,
         bool includePublic,
         bool excludeGenerated,
+        HashSet<ProjectId> solutionProjectIds,
         Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource,
         IProgress<string>? progress)
     {
@@ -484,7 +472,7 @@ public class FindUnusedAnalyzer
         {
             foreach (var loc in rr.Locations)
             {
-                if (!isReferenceInSolutionSource(loc.Location, solution, new HashSet<ProjectId>())) continue;
+                if (!isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds)) continue;
                 bool isDefinitionLocation = defLocs.Any(d =>
                     d.SourceTree == loc.Location.SourceTree &&
                     d.SourceSpan.Equals(loc.Location.SourceSpan));
@@ -520,6 +508,7 @@ public class FindUnusedAnalyzer
         bool includeInternal,
         bool includePublic,
         bool excludeGenerated,
+        HashSet<ProjectId> solutionProjectIds,
         Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource,
         IProgress<string>? progress)
     {
@@ -537,7 +526,7 @@ public class FindUnusedAnalyzer
         {
             foreach (var loc in rr.Locations)
             {
-                if (!isReferenceInSolutionSource(loc.Location, solution, new HashSet<ProjectId>())) continue;
+                if (!isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds)) continue;
                 bool isDefinitionLocation = defLocs.Any(d =>
                     d.SourceTree == loc.Location.SourceTree &&
                     d.SourceSpan.Equals(loc.Location.SourceSpan));
@@ -931,13 +920,12 @@ class Program
             Console.WriteLine("  --no-internal         Exclude internal symbols from analysis");
             Console.WriteLine("  --exclude-generated    Exclude generated code from analysis (default: true)");
             Console.WriteLine("  --include-generated    Include generated code in analysis");
-            Console.WriteLine("  --report <path>        Output report file path (JSON format)");
             Console.WriteLine("  --verbose             Enable verbose output");
             Console.WriteLine("  --help, -h            Show help information");
             Console.WriteLine();
             Console.WriteLine("Examples:");
             Console.WriteLine("  dotnet run FindUnused.dll ./MySolution.sln");
-            Console.WriteLine("  dotnet run FindUnused.dll ./MyProject.csproj --report ./report.json");
+            Console.WriteLine("  dotnet run FindUnused.dll ./MyProject.csproj");
             Console.WriteLine("  dotnet run FindUnused.dll ./ --no-public --include-internal");
             return 0;
         }
@@ -947,7 +935,6 @@ class Program
         bool includePublic = true;
         bool includeInternal = true;
         bool excludeGenerated = true;
-        string? reportPath = null;
         bool verbose = false;
 
         for (int i = 0; i < argsList.Count; i++)
@@ -976,19 +963,6 @@ class Program
                 case "--include-generated":
                 case "--generated":
                     excludeGenerated = false;
-                    break;
-                case "--report":
-                case "--output":
-                case "--report-path":
-                    if (i + 1 < argsList.Count)
-                    {
-                        reportPath = argsList[++i];
-                    }
-                    else
-                    {
-                        Console.WriteLine("Error: --report option requires a file path");
-                        return 1;
-                    }
                     break;
                 case "--verbose":
                 case "-v":
@@ -1020,10 +994,6 @@ class Program
             Console.WriteLine($"Include public: {includePublic}");
             Console.WriteLine($"Include internal: {includeInternal}");
             Console.WriteLine($"Exclude generated: {excludeGenerated}");
-            if (!string.IsNullOrEmpty(reportPath))
-            {
-                Console.WriteLine($"Report path: {reportPath}");
-            }
             Console.WriteLine();
 
             var result = await FindUnusedAnalyzer.RunAnalysisAsync(
@@ -1031,7 +1001,6 @@ class Program
                 includePublic,
                 includeInternal,
                 excludeGenerated,
-                reportPath,
                 progress);
 
             if (result.Success)
