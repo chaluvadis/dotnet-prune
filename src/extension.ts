@@ -132,6 +132,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   private groupedBySolution: Map<string, Map<string, Map<string, Finding[]>>> =
     new Map();
   private solutionFiles: Map<string, string> = new Map(); // solutionName -> solutionFilePath
+  private projectToSolutionMap: Map<string, string> = new Map(); // projectName -> solutionName
 
   constructor(private context: vscode.ExtensionContext) {}
 
@@ -147,6 +148,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     this.findings = [];
     this.groupedBySolution.clear();
     this.solutionFiles.clear();
+    this.projectToSolutionMap.clear();
     this._onDidChangeTreeData.fire(undefined);
     vscode.window.showInformationMessage("DotNetPrune: findings cleared.");
   }
@@ -358,13 +360,134 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     }
   }
 
+  // Extract project name from file path
+  private extractProjectNameFromPath(filePath: string): string {
+    try {
+      const relativePath = path.relative(getWorkspaceRootPath(), filePath);
+      const parts = relativePath.split(path.sep);
+      
+      // If the file is in a Models, Services, etc. subfolder, look for the actual project folder
+      if (parts.length > 1) {
+        // Check for common project folder patterns
+        for (let i = 0; i < parts.length - 1; i++) {
+          const part = parts[i];
+          
+          // Skip common non-project directories
+          if (['src', 'lib', 'test', 'tests', 'assets', 'resources', 'common', 'models', 'services', 'controllers'].includes(part.toLowerCase())) {
+            continue;
+          }
+          
+          // This might be the actual project folder
+          if (part && part !== '' && !part.includes('.')) {
+            // Verify this folder contains code files or is a project folder
+            const projectFolderPath = path.join(getWorkspaceRootPath(), parts.slice(0, i + 1).join(path.sep));
+            
+            if (fs.existsSync(projectFolderPath)) {
+              try {
+                const files = fs.readdirSync(projectFolderPath);
+                const hasCsFiles = files.some(f => f.endsWith('.cs'));
+                const hasCsproj = files.some(f => f.endsWith('.csproj'));
+                
+                if (hasCsFiles || hasCsproj) {
+                  return part;
+                }
+              } catch (e) {
+                // Continue if we can't read the directory
+              }
+            }
+          }
+        }
+      }
+      
+      // Fallback: look for .csproj files in the directory structure
+      const projectInfo = this.findProjectForFile(filePath);
+      if (projectInfo) {
+        return projectInfo;
+      }
+      
+      // Ultimate fallback: use the first directory
+      const topLevelDir = parts[0];
+      if (topLevelDir && topLevelDir !== '') {
+        return topLevelDir;
+      }
+      
+      return "Project";
+    } catch (error) {
+      return "Project";
+    }
+  }
+
+  // Find the project that contains this file by looking for .csproj files
+  private findProjectForFile(filePath: string): string | null {
+    try {
+      const fileDir = path.dirname(filePath);
+      const workspaceRoot = getWorkspaceRootPath();
+      
+      // Walk up the directory tree looking for .csproj files
+      let currentDir = fileDir;
+      while (currentDir !== workspaceRoot && currentDir !== path.dirname(currentDir)) {
+        try {
+          const files = fs.readdirSync(currentDir);
+          const csprojFiles = files.filter(f => f.endsWith('.csproj'));
+          
+          if (csprojFiles.length > 0) {
+            // Use the first .csproj file found
+            const projectName = path.basename(csprojFiles[0], '.csproj');
+            return projectName;
+          }
+        } catch (e) {
+          // Continue if we can't read the directory
+        }
+        
+        currentDir = path.dirname(currentDir);
+      }
+    } catch (error) {
+      // Ignore errors
+    }
+    
+    return null;
+  }
+
+  // Check if a path contains code files
+  private containsCodeFiles(relativePath: string): boolean {
+    return relativePath.includes('.cs') || relativePath.includes('.vb') || relativePath.includes('.fs');
+  }
+
+  // Better categorization based on file path analysis
+  private categorizeByFilePath(filePath: string): string {
+    try {
+      const relativePath = path.relative(getWorkspaceRootPath(), filePath);
+      const parts = relativePath.split(path.sep);
+      
+      // Look for solution files in parent directories
+      for (let i = 0; i < parts.length; i++) {
+        const currentPath = parts.slice(0, i + 1).join(path.sep);
+        const dirPath = path.join(getWorkspaceRootPath(), currentPath);
+        
+        if (fs.existsSync(dirPath)) {
+          const files = fs.readdirSync(dirPath);
+          const hasSlnFile = files.some(f => f.toLowerCase().endsWith('.sln') || f.toLowerCase().endsWith('.slnx'));
+          
+          if (hasSlnFile) {
+            const solutionName = path.basename(currentPath);
+            return solutionName;
+          }
+        }
+      }
+      
+      return "Standalone Projects";
+    } catch (error) {
+      return "Standalone Projects";
+    }
+  }
+
   private async loadFindingsFromJson(findingsJson: any[]): Promise<void> {
     if (!Array.isArray(findingsJson)) {
       throw new Error("Findings JSON must be an array.");
     }
 
-    // Discover all solution files in workspace
-    await this.discoverSolutions();
+    // Discover all solution files and project mappings in workspace
+    await this.discoverSolutionsAndProjects();
 
     // Map to internal Finding type and normalize paths, filter for .NET files only
     const mapped: Finding[] = findingsJson
@@ -374,13 +497,17 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
           ? filePath
           : path.join(getWorkspaceRootPath(), filePath);
 
+        // Extract project name from file path if not provided
+        let projectName = p.Project ?? p.project ?? "";
+        if (!projectName || projectName === "") {
+          projectName = this.extractProjectNameFromPath(resolved);
+        }
+
         // Determine which solution this project belongs to
-        const solution = this.findSolutionForProject(
-          p.Project ?? p.project ?? ""
-        );
+        const solution = this.findSolutionForProject(projectName, resolved);
 
         return {
-          Project: p.Project ?? p.project ?? "",
+          Project: projectName,
           Solution: solution,
           FilePath: resolved,
           Line: typeof p.Line === "number" ? p.Line : p.line ?? 1,
@@ -404,8 +531,8 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
     // Organize findings by Solution -> Project -> File
     for (const f of this.findings) {
-      const solutionName = f.Solution || "Standalone Projects";
-      const projectName = f.Project || "Unknown Project";
+      const solutionName = f.Solution || this.categorizeByFilePath(f.FilePath);
+      const projectName = f.Project || this.extractProjectNameFromPath(f.FilePath);
 
       if (!this.groupedBySolution.has(solutionName)) {
         this.groupedBySolution.set(solutionName, new Map());
@@ -423,8 +550,9 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     }
   }
 
-  private async discoverSolutions(): Promise<void> {
+  private async discoverSolutionsAndProjects(): Promise<void> {
     this.solutionFiles.clear();
+    this.projectToSolutionMap.clear();
 
     // Exclude build folders when discovering solutions too
     const excludedFolders = "**/{bin,debug,obj,release,nuget,bin/**,debug/**,obj/**,release/**,nuget/**}/**";
@@ -448,23 +576,182 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         path.extname(solutionFile.fsPath)
       );
       this.solutionFiles.set(solutionName, solutionFile.fsPath);
+      
+      // Discover projects associated with this solution
+      await this.discoverProjectsForSolution(solutionFile.fsPath, solutionName);
+    }
+
+    // Also discover standalone projects (projects not in solutions)
+    await this.discoverStandaloneProjects();
+  }
+
+  private async discoverStandaloneProjects(): Promise<void> {
+    try {
+      const excludedFolders = "**/{bin,debug,obj,release,nuget,bin/**,debug/**,obj/**,release/**,nuget/**}/**";
+      
+      const csprojFiles = await vscode.workspace.findFiles(
+        "**/*.csproj",
+        `${excludedFolders},**/node_modules/**`,
+        100
+      );
+
+      for (const csprojFile of csprojFiles) {
+        const projectName = path.basename(csprojFile.fsPath, '.csproj');
+        const projectDir = path.dirname(csprojFile.fsPath);
+        
+        // Check if this project is already associated with a solution
+        let alreadyAssociated = false;
+        for (const [_, solutionName] of this.solutionFiles) {
+          if (projectDir.startsWith(path.dirname(solutionName))) {
+            alreadyAssociated = true;
+            break;
+          }
+        }
+        
+        if (!alreadyAssociated) {
+          this.projectToSolutionMap.set(projectName, "Standalone Projects");
+        }
+      }
+    } catch (error) {
+      this.appendToOutput(`Warning: Could not discover standalone projects: ${error}`);
     }
   }
 
-  private findSolutionForProject(projectName: string): string | undefined {
-    // Simple heuristic: find solution that contains this project name
+  private async discoverProjectsForSolution(solutionPath: string, solutionName: string): Promise<void> {
+    try {
+      const solutionDir = path.dirname(solutionPath);
+      const csprojFiles = await vscode.workspace.findFiles(
+        `${path.relative(getWorkspaceRootPath(), solutionDir)}/**/*.csproj`,
+        "**/{bin,debug,obj,release,nuget}/**",
+        100
+      );
+
+      for (const csprojFile of csprojFiles) {
+        const projectName = path.basename(csprojFile.fsPath, '.csproj');
+        this.projectToSolutionMap.set(projectName, solutionName);
+        
+        // Associate the project directory as well
+        const projectDir = path.dirname(csprojFile.fsPath);
+        const relativeProjectDir = path.relative(solutionDir, projectDir);
+        const dirName = path.basename(projectDir);
+        
+        // If the project is in a subdirectory, associate that too
+        if (dirName && dirName !== solutionName) {
+          this.projectToSolutionMap.set(dirName, solutionName);
+        }
+        
+        // Also try to find all directories in the project path that might be referenced
+        if (relativeProjectDir && relativeProjectDir !== '.') {
+          const pathParts = relativeProjectDir.split(path.sep);
+          for (let i = 0; i < pathParts.length; i++) {
+            const partialPath = pathParts.slice(0, i + 1).join(path.sep);
+            const fullPath = path.join(solutionDir, partialPath);
+            const partialDirName = path.basename(fullPath);
+            
+            if (partialDirName && partialDirName !== solutionName) {
+              this.projectToSolutionMap.set(partialDirName, solutionName);
+            }
+          }
+        }
+      }
+      
+      this.appendToOutput(`Discovered ${csprojFiles.length} projects for solution ${solutionName}`);
+    } catch (error) {
+      // Ignore errors in project discovery
+      this.appendToOutput(`Warning: Could not discover projects for solution ${solutionName}: ${error}`);
+    }
+  }
+
+  private findSolutionForProject(projectName: string, filePath?: string): string | undefined {
+    // First check our project-to-solution mapping
+    if (this.projectToSolutionMap.has(projectName)) {
+      return this.projectToSolutionMap.get(projectName);
+    }
+
+    // Enhanced logic for namespace-based projects (e.g., "FlowCore.Models")
+    if (projectName.includes('.')) {
+      const namespaceParts = projectName.split('.');
+      // Try each part of the namespace to find a matching project
+      for (let i = namespaceParts.length - 1; i >= 0; i--) {
+        const partialProject = namespaceParts.slice(0, i + 1).join('.');
+        if (this.projectToSolutionMap.has(partialProject)) {
+          return this.projectToSolutionMap.get(partialProject);
+        }
+        
+        // Also try just the last part (e.g., "Models")
+        if (i === namespaceParts.length - 1 && this.projectToSolutionMap.has(namespaceParts[i])) {
+          return this.projectToSolutionMap.get(namespaceParts[i]);
+        }
+      }
+    }
+
+    // Try fuzzy matching with known solutions
     for (const [solutionName, solutionPath] of this.solutionFiles) {
       if (
         projectName.toLowerCase().includes(solutionName.toLowerCase()) ||
-        solutionName.toLowerCase().includes(projectName.toLowerCase())
+        solutionName.toLowerCase().includes(projectName.toLowerCase()) ||
+        this.hasFuzzyMatch(projectName, solutionName)
       ) {
         return solutionName;
       }
     }
 
-    // If no direct match, try to find by path proximity
-    // This is a simplified approach - in reality, you'd parse solution files
+    // Enhanced path-based solution finding
+    if (filePath) {
+      const pathBasedSolution = this.findSolutionByFilePath(filePath);
+      if (pathBasedSolution) {
+        return pathBasedSolution;
+      }
+    }
+
     return undefined;
+  }
+
+  // Enhanced solution finding based on file path analysis
+  private findSolutionByFilePath(filePath: string): string | null {
+    try {
+      const fileDir = path.dirname(filePath);
+      const workspaceRoot = getWorkspaceRootPath();
+      
+      // Walk up the directory tree looking for solution files
+      let currentDir = fileDir;
+      while (currentDir !== workspaceRoot && currentDir !== path.dirname(currentDir)) {
+        try {
+          const files = fs.readdirSync(currentDir);
+          const solutionFiles = files.filter(f =>
+            f.toLowerCase().endsWith('.sln') || f.toLowerCase().endsWith('.slnx')
+          );
+          
+          if (solutionFiles.length > 0) {
+            const solutionName = path.basename(solutionFiles[0], path.extname(solutionFiles[0]));
+            return solutionName;
+          }
+        } catch (e) {
+          // Continue if we can't read the directory
+        }
+        
+        currentDir = path.dirname(currentDir);
+      }
+    } catch (error) {
+      // Ignore errors
+    }
+    
+    return null;
+  }
+
+  private hasFuzzyMatch(projectName: string, solutionName: string): boolean {
+    const projectWords = projectName.toLowerCase().split(/[\s\-_\.]/);
+    const solutionWords = solutionName.toLowerCase().split(/[\s\-_\.]/);
+    
+    for (const pWord of projectWords) {
+      for (const sWord of solutionWords) {
+        if (pWord.length > 2 && sWord.length > 2 && 
+            (pWord.includes(sWord) || sWord.includes(pWord))) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   // open a finding in editor and reveal the line
