@@ -4,7 +4,7 @@
   "description": "Visualize unused .NET code in VS Code with hierarchical tree view showing findings organized by solution, project, and files.",
   "version": "0.0.1",
   "publisher": "nomad-in-code",
-  "icon": "./resources/icon.png",
+  "icon": "resources/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -59,7 +59,7 @@
         {
           "id": "dotnetprune-views",
           "title": "DotNetPrune",
-          "icon": "./resources/gray.png"
+          "icon": "resources/gray.png"
         }
       ]
     },
@@ -68,7 +68,7 @@
         {
           "id": "dotnetprune-findings",
           "name": "Findings",
-          "icon": "./resources/icon.png"
+          "icon": "resources/icon.png"
         }
       ]
     },
