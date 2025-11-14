@@ -107,6 +107,5 @@ dotnet run --project FindUnused/FindUnused.csproj -- /path/to/YourSolution.sln
 <img src="./resources/screen_record.gif" alt="Extension usage">
 
 ## Next Steps
-
+- Update the analyzer to handle different dotnet project types.
 - Optimize the analyzer for large solutions.
-- Support for additional .NET project types
