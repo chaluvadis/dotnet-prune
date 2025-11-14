@@ -102,8 +102,11 @@ dotnet run --project FindUnused/FindUnused.csproj -- /path/to/YourSolution.sln
 - **Integrated Workflow**: No need to run external tools or manage report files
 - **Smart Organization**: Findings are organized exactly as they appear in your solution structure
 
+## Extension Usage
+
+<img src="./resources/screen_record.gif" alt="Extension usage">
+
 ## Next Steps
 
-- Add code actions to mark findings as ignored or suppressed
-- Add confidence scoring and filtering options
+- Optimize the analyzer for large solutions.
 - Support for additional .NET project types
