@@ -279,7 +279,11 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
               // Parse JSON from stdout - expect clean JSON array
               const trimmedStdout = stdout.trim();
               if (!trimmedStdout) {
-                throw new Error("No output received from analyzer");
+                if (stderr && stderr.trim().length > 0) {
+                  throw new Error(`Analyzer failed: ${stderr.trim()}`);
+                } else {
+                  throw new Error("No output received from analyzer");
+                }
               }
 
               // Try to parse as JSON directly
