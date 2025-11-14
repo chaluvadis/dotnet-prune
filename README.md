@@ -2,6 +2,10 @@
 
 DotNetPrune analyzes candidate unused code (methods, parameters, fields, properties, types) in .NET solutions using Roslyn and displays the results in VS Code through an integrated hierarchical tree view.
 
+## Installation
+
+Install the extension from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=nomad-in-code.dotnet-prune-vscode).
+
 ## Features
 
 - **Hierarchical Tree View**: Displays findings organized by Solution → Project → File → Unused Items
@@ -51,16 +55,9 @@ DotNetPrune analyzes candidate unused code (methods, parameters, fields, propert
 - **DotNetPrune: Open Finding**: Navigate to the finding location in source code
 - **Copy File Path**: Right-click on file nodes in the tree view to copy file paths to clipboard
 
-## Setup
+## Extension Treeviewer
 
-1. **Install Extension**: Install the DotNetPrune VS Code extension
-2. **Open .NET Workspace**: Open a workspace containing .NET solutions or projects
-3. **Run Analysis**: Use the command palette to run "DotNetPrune: Run Analysis"
-4. **Browse Findings**: View results in the DotNetPrune Activity Bar panel
-
-## Report Format
-
-The FindUnused analyzer produces a JSON array of findings. Each finding includes:
+Extension analyses the solution and produces a JSON array of findings. Each finding includes:
 
 - **Project** (string): Project name containing the unused code
 - **FilePath** (string): Absolute path to the source file
@@ -78,6 +75,18 @@ The FindUnused analyzer produces a JSON array of findings. Each finding includes
 - **Direct Integration**: Uses bundled FindUnused.dll tool for analysis
 - **Real-time Processing**: Processes analyzer output directly without intermediate files
 
+## Extension Usage
+
+<img src="./resources/screen_record.gif" alt="Extension usage">
+
+## Benefits
+
+- **Clean Codebase Visualization**: Easily identify and remove unused code
+- **Solution-Level Overview**: Understand unused code distribution across entire solutions
+- **Efficient Navigation**: Quick access to unused code locations
+- **Integrated Workflow**: No need to run external tools or manage report files
+- **Smart Organization**: Findings are organized exactly as they appear in your solution structure
+
 ## Development
 
 ### Building the Extension
@@ -93,19 +102,6 @@ npm run package
 ```bash
 dotnet run --project FindUnused/FindUnused.csproj -- /path/to/YourSolution.sln
 ```
-
-## Benefits
-
-- **Clean Codebase Visualization**: Easily identify and remove unused code
-- **Solution-Level Overview**: Understand unused code distribution across entire solutions
-- **Efficient Navigation**: Quick access to unused code locations
-- **Integrated Workflow**: No need to run external tools or manage report files
-- **Smart Organization**: Findings are organized exactly as they appear in your solution structure
-
-## Extension Usage
-
-<img src="./resources/screen_record.gif" alt="Extension usage">
-
 ## Next Steps
 - Update the analyzer to handle different dotnet project types.
 - Optimize the analyzer for large solutions.
