@@ -8,12 +8,6 @@ public class AnalyzerConfiguration
     public bool IncludePublicSymbols { get; set; } = true;
     public bool IncludeInternalSymbols { get; set; } = true;
     public bool ExcludeGeneratedCode { get; set; } = true;
-    public bool EnableReflectionDetection { get; set; } = true;
-    public bool EnableCrossProjectAnalysis { get; set; } = true;
-    public bool EnableEntryPointDetection { get; set; } = true;
-    public HashSet<string> AdditionalEntryPointPatterns { get; set; } = new();
-    public HashSet<string> CustomAttributesToIgnore { get; set; } = new();
-    public int MaxConcurrencyLevel { get; set; } = Environment.ProcessorCount;
 }
 
 /// <summary>
@@ -25,20 +19,11 @@ public class ProjectAnalysisCache
 }
 
 /// <summary>
-/// Cache for document analysis results
-/// </summary>
-public class DocumentAnalysisCache
-{
-    // Placeholder for document-level caching
-}
-
-/// <summary>
 /// Intelligent caching system for analyzer performance
 /// </summary>
 public class AnalyzerCache
 {
-    private readonly Dictionary<ProjectId, ProjectAnalysisCache> _projectCaches = new();
-    private readonly Dictionary<DocumentId, DocumentAnalysisCache> _documentCaches = new();
+    private readonly Dictionary<ProjectId, ProjectAnalysisCache> _projectCaches = [];
 
     private ProjectAnalysisCache GetProjectCache(ProjectId projectId)
     {
@@ -62,7 +47,7 @@ public class AnalyzerCache
         return locations;
     }
 
-    private async Task<HashSet<Location>> PerformSymbolSearchAsync(ISymbol symbol, Solution solution, HashSet<ProjectId> solutionProjectIds, Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource)
+    private static async Task<HashSet<Location>> PerformSymbolSearchAsync(ISymbol symbol, Solution solution, HashSet<ProjectId> solutionProjectIds, Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource)
     {
         var locations = new HashSet<Location>();
         var references = await SymbolFinder.FindReferencesAsync(symbol, solution);
@@ -135,8 +120,6 @@ public class FindUnusedAnalyzer
     public static bool DiagnosticMode { get; set; } = false;
 
     private static readonly AnalyzerCache _cache = new();
-
-    private static JsonSerializerOptions GetOptions() => new() { WriteIndented = true };
 
     /// <summary>
     /// Run the analysis with specified parameters
@@ -283,7 +266,7 @@ public class FindUnusedAnalyzer
             "/release/"          // optionally ignore release outputs too (safe to include)
         };
 
-        return indicators.Any(ind => low.Contains(ind));
+        return indicators.Any(low.Contains);
     }
 
     private static bool DocumentIsExcluded(Document? doc)
