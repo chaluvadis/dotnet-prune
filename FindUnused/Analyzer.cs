@@ -5,6 +5,15 @@ namespace FindUnused;
 /// </summary>
 public static class Analyzer
 {
+    // Constants for symbol kinds
+    private const string SymbolKindMethod = "Method";
+    private const string SymbolKindProperty = "Property";
+    private const string SymbolKindField = "Field";
+    private const string SymbolKindParameter = "Parameter";
+    private const string SymbolKindType = "Type";
+
+    private static AnalyzerConfiguration _config = new();
+
     /// <summary>
     /// Analyze a single project for unused symbols
     /// </summary>
@@ -87,6 +96,81 @@ public static class Analyzer
     }
 
     /// <summary>
+    /// Check if type should be analyzed based on accessibility
+    /// </summary>
+    private static bool ShouldAnalyzeType(INamedTypeSymbol type, bool includePublic, bool includeInternal)
+    {
+        var tAcc = type.DeclaredAccessibility;
+        if (tAcc == Accessibility.Public && !includePublic) return false;
+        if (tAcc == Accessibility.Internal && !includeInternal) return false;
+        if (tAcc == Accessibility.Protected || tAcc == Accessibility.ProtectedOrInternal) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Analyze members of a type
+    /// </summary>
+    private static async Task<(List<Finding> findings, bool typeHasReferencedMember)> AnalyzeTypeMembersAsync(
+        INamedTypeSymbol type,
+        Project project,
+        Solution solution,
+        bool includePublic,
+        bool includeInternal,
+        bool excludeGenerated,
+        Compilation compilation,
+        HashSet<ProjectId> solutionProjectIds,
+        Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource,
+        IProgress<string>? progress)
+    {
+        var findings = new List<Finding>();
+        bool typeHasReferencedMember = false;
+
+        foreach (var member in type.GetMembers())
+        {
+            try
+            {
+                if (member.IsImplicitlyDeclared) continue;
+                var defLoc = SymbolUtilities.GetSourceLocation(member);
+
+                // Skip if the member's source file is in an excluded path
+                if (defLoc != null && PathUtilities.SourceTreeIsExcluded(defLoc.SourceTree, _config.ExclusionPatterns)) continue;
+
+                if (excludeGenerated && defLoc != null && SymbolUtilities.IsGenerated(defLoc.SourceTree, _config.GeneratedCodeMarkers)) continue;
+
+                if (member is IMethodSymbol method)
+                {
+                    var (methodFindings, memberReferenced) = await AnalyzeMethodAsync(
+                        method, type, project, solution, includePublic, includeInternal,
+                        excludeGenerated, compilation, solutionProjectIds, isReferenceInSolutionSource, progress);
+                    findings.AddRange(methodFindings);
+                    if (memberReferenced) typeHasReferencedMember = true;
+                }
+                else if (member is IPropertySymbol prop)
+                {
+                    var (propertyFindings, memberReferenced) = await AnalyzePropertyAsync(
+                        prop, type, project, solution, includePublic, includeInternal,
+                        excludeGenerated, solutionProjectIds, isReferenceInSolutionSource, progress);
+                    findings.AddRange(propertyFindings);
+                    if (memberReferenced) typeHasReferencedMember = true;
+                }
+                else if (member is IFieldSymbol field)
+                {
+                    var (fieldFindings, memberReferenced) = await AnalyzeFieldAsync(
+                        field, type, project, solution, includePublic, includeInternal,
+                        excludeGenerated, solutionProjectIds, isReferenceInSolutionSource, progress);
+                    findings.AddRange(fieldFindings);
+                    if (memberReferenced) typeHasReferencedMember = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                progress?.Report($"    Warning analyzing member {member.Name}: {ex.Message}");
+            }
+        }
+        return (findings, typeHasReferencedMember);
+    }
+
+    /// <summary>
     /// Analyze a type and its members
     /// </summary>
     private static async Task<(List<Finding> findings, bool typeHasReferencedMember)> AnalyzeTypeAsync(
@@ -105,62 +189,23 @@ public static class Analyzer
         var findings = new List<Finding>();
         bool typeHasReferencedMember = false;
         // Skip types outside the solution-declared namespaces
-        if (!Utilities.IsNamespaceAllowed(type.ContainingNamespace, declaredNamespaces))
+        if (!SymbolUtilities.IsNamespaceAllowed(type.ContainingNamespace, declaredNamespaces))
             return (findings, typeHasReferencedMember);
         if (type.IsImplicitlyDeclared) return (findings, typeHasReferencedMember);
         // Respect visibility options for types
-        var tAcc = type.DeclaredAccessibility;
-        if (tAcc == Accessibility.Public && !includePublic) return (findings, typeHasReferencedMember);
-        if (tAcc == Accessibility.Internal && !includeInternal && tAcc != Accessibility.Private) return (findings, typeHasReferencedMember);
-        if (tAcc == Accessibility.Protected || tAcc == Accessibility.ProtectedOrInternal) return (findings, typeHasReferencedMember);
+        if (!ShouldAnalyzeType(type, includePublic, includeInternal)) return (findings, typeHasReferencedMember);
 
         // Consider only declaration locations that are not excluded (bin/obj/nuget/packages/debug)
-        var defTypeLocs = type.Locations.Where(l => l.IsInSource && !Utilities.SourceTreeIsExcluded(l.SourceTree)).ToList();
+        var defTypeLocs = type.Locations.Where(l => l.IsInSource && !PathUtilities.SourceTreeIsExcluded(l.SourceTree, _config.ExclusionPatterns)).ToList();
         if (defTypeLocs.Count == 0) return (findings, typeHasReferencedMember); // nothing in source to analyze (or all declarations excluded)
 
         // Analyze members first and record member-level usage
-        foreach (var member in type.GetMembers())
-        {
-            try
-            {
-                if (member.IsImplicitlyDeclared) continue;
-                var defLoc = Utilities.GetSourceLocation(member);
+        var (memberFindings, hasReferencedMember) = await AnalyzeTypeMembersAsync(
+            type, project, solution, includePublic, includeInternal, excludeGenerated,
+            compilation, solutionProjectIds, isReferenceInSolutionSource, progress);
+        findings.AddRange(memberFindings);
+        typeHasReferencedMember = hasReferencedMember;
 
-                // Skip if the member's source file is in an excluded path
-                if (defLoc != null && Utilities.SourceTreeIsExcluded(defLoc.SourceTree)) continue;
-
-                if (excludeGenerated && defLoc != null && Utilities.IsGenerated(defLoc.SourceTree)) continue;
-
-                if (member is IMethodSymbol method)
-                {
-                    var (methodFindings, memberReferenced) = await AnalyzeMethodAsync(
-                        method, type, project, solution, includePublic, includeInternal,
-                        excludeGenerated, compilation, solutionProjectIds, isReferenceInSolutionSource, progress);
-                    findings.AddRange(methodFindings);
-                    if (memberReferenced) typeHasReferencedMember = true;
-                }
-                else if (member is IPropertySymbol prop)
-                {
-                    var (propertyFindings, memberReferenced) = await AnalyzePropertyAsync(
-                        prop, type, project, solution, includeInternal, includePublic,
-                        excludeGenerated, solutionProjectIds, isReferenceInSolutionSource, progress);
-                    findings.AddRange(propertyFindings);
-                    if (memberReferenced) typeHasReferencedMember = true;
-                }
-                else if (member is IFieldSymbol field)
-                {
-                    var (fieldFindings, memberReferenced) = await AnalyzeFieldAsync(
-                        field, type, project, solution, includeInternal, includePublic,
-                        excludeGenerated, solutionProjectIds, isReferenceInSolutionSource, progress);
-                    findings.AddRange(fieldFindings);
-                    if (memberReferenced) typeHasReferencedMember = true;
-                }
-            }
-            catch (Exception ex)
-            {
-                progress?.Report($"    Warning analyzing member {member.Name}: {ex.Message}");
-            }
-        }
         return (findings, typeHasReferencedMember);
     }
 
@@ -193,77 +238,52 @@ public static class Analyzer
 
         var acc = method.DeclaredAccessibility;
         if (acc == Accessibility.Public && !includePublic) return (findings, referenced);
-        if (acc == Accessibility.Internal && !includeInternal && acc != Accessibility.Private) return (findings, referenced);
+        if (acc == Accessibility.Internal && !includeInternal) return (findings, referenced);
         if (acc == Accessibility.Protected || acc == Accessibility.ProtectedOrInternal) return (findings, referenced);
         var entry = compilation.GetEntryPoint(CancellationToken.None);
         if (entry != null && SymbolEqualityComparer.Default.Equals(entry, method)) return (findings, referenced);
         // Skip entry point methods as they are not considered unused
-        if (Utilities.IsEntryPointMethod(method, type))
+        if (SymbolUtilities.IsEntryPointMethod(method, type, _config.TestAttributes, _config.TestClassAttributes))
         {
-            return (findings, false); // Return referenced=true to indicate it's an entry point
+            return (findings, true); // Return referenced=true to indicate it's an entry point
         }
-        var defLoc = Utilities.GetSourceLocation(method);
+        var defLoc = SymbolUtilities.GetSourceLocation(method);
 
         // Skip if definition is in an excluded folder
-        if (defLoc != null && Utilities.SourceTreeIsExcluded(defLoc.SourceTree)) return (findings, referenced);
+        if (defLoc != null && PathUtilities.SourceTreeIsExcluded(defLoc.SourceTree, _config.ExclusionPatterns)) return (findings, referenced);
 
-        if (excludeGenerated && defLoc != null && Utilities.IsGenerated(defLoc.SourceTree)) return (findings, referenced);
-        // Find references across the solution using cache
-        var defLocations = method.Locations.Where(l => l.IsInSource).ToList();
-        var allLocations = await _cache.GetSymbolLocationsAsync(method, project.Id, solution, solutionProjectIds, isReferenceInSolutionSource);
-        int refCount = allLocations.Count(l => !defLocations.Any(d =>
-            d.SourceTree == l.SourceTree &&
-            d.SourceSpan.Equals(l.SourceSpan)));
+        if (excludeGenerated && defLoc != null && SymbolUtilities.IsGenerated(defLoc.SourceTree, _config.GeneratedCodeMarkers)) return (findings, referenced);
 
-        // If no direct references found, check if this method implements an interface method
+        // Check direct references
+        var (refCount, _) = await CheckSymbolReferencesAsync(method, project, solution, solutionProjectIds, isReferenceInSolutionSource);
+
+        // If no direct references found, check interface implementations
         if (refCount == 0)
         {
-            var interfaceMethod = GetImplementedInterfaceMethod(method, type);
-            if (interfaceMethod != null)
-            {
-                var interfaceRefs = await SymbolFinder.FindReferencesAsync(interfaceMethod, solution);
-                foreach (var rr in interfaceRefs)
-                {
-                    foreach (var loc in rr.Locations)
-                    {
-                        if (!isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds)) continue;
-                        bool isDefinitionLocation = interfaceMethod.Locations.Where(l => l.IsInSource).Any(d =>
-                            d.SourceTree == loc.Location.SourceTree &&
-                            d.SourceSpan.Equals(loc.Location.SourceSpan));
-                        if (!isDefinitionLocation) refCount++;
-                    }
-                }
-            }
-        }
-
-        // Fallback: manual semantic search for all symbols
-        if (refCount == 0)
-        {
-            if (await SemanticSearch.ManualSemanticSearchAsync(method, solution, solutionProjectIds))
-                refCount = 1;
+            refCount = await CheckInterfaceReferencesAsync(method, type, solution, solutionProjectIds, isReferenceInSolutionSource);
         }
 
         if (refCount > 0)
             referenced = true;
         else
         {
-            var (line, _) = defLoc != null ? Utilities.GetLinePosition(defLoc) : (-1, -1);
+            var (line, _) = defLoc != null ? SymbolUtilities.GetLinePosition(defLoc) : (-1, -1);
             Document? doc = defLoc != null ? solution.GetDocument(defLoc.SourceTree) : null;
-            string projectDisplay = Utilities.BuildProjectDisplayNameFrom(project, doc);
+            string projectDisplay = SymbolUtilities.BuildProjectDisplayNameFrom(project, doc);
 
             // File path displayed relative to project/solution or using virtual folder structure in Project
-            string filePathDisplay = Utilities.GetDisplayPathForDocument(doc, defLoc?.SourceTree, project, solution);
-            string displayName = Utilities.GetDisplayNameForDocument(doc, defLoc?.SourceTree);
+            string filePathDisplay = PathUtilities.GetDisplayPathForDocument(doc, defLoc?.SourceTree, project, solution);
+            string displayName = PathUtilities.GetDisplayNameForDocument(doc, defLoc?.SourceTree);
 
             // Full path for extension-level use
-            string fullPath = Utilities.GetFullPathForDocument(doc, defLoc?.SourceTree) ?? "(generated)";
+            string fullPath = PathUtilities.GetFullPathForDocument(doc, defLoc?.SourceTree) ?? "(generated)";
 
             // Project file path (absolute) for extension-level use
-            string projectFilePath = Utilities.GetProjectFilePath(project, doc) ?? "(unknown)";
+            string projectFilePath = PathUtilities.GetProjectFilePath(project, doc) ?? "(unknown)";
 
             string declaredProject = doc?.Project?.Name ?? "(null)";
             string fallbackProject = project?.Name ?? "(null)";
-            string icon = Utilities.GetIconForSymbolKind("Method");
+            string icon = SymbolUtilities.GetIconForSymbolKind(SymbolKindMethod);
 
             // Diagnostic logging when doc==null
             if (DiagnosticMode)
@@ -281,7 +301,7 @@ public static class Analyzer
                 DisplayName = displayName,
                 ProjectFilePath = projectFilePath,
                 Line = line,
-                SymbolKind = "Method",
+                SymbolKind = SymbolKindMethod,
                 ContainingType = type.ToDisplayString(),
                 SymbolName = method.ToDisplayString(),
                 Accessibility = method.DeclaredAccessibility.ToString(),
@@ -315,7 +335,7 @@ public static class Analyzer
         {
             if (param.RefKind != RefKind.None) continue;
             var paramRefs = await SymbolFinder.FindReferencesAsync(param, solution);
-            var paramDefLocs = param.Locations.Where(l => l.IsInSource && !Utilities.SourceTreeIsExcluded(l.SourceTree)).ToList();
+            var paramDefLocs = param.Locations.Where(l => l.IsInSource && !PathUtilities.SourceTreeIsExcluded(l.SourceTree, _config.ExclusionPatterns)).ToList();
             int paramRefCount = 0;
             foreach (var rr in paramRefs)
             {
@@ -329,16 +349,16 @@ public static class Analyzer
             if (paramRefCount == 0)
             {
                 var pLoc = paramDefLocs.FirstOrDefault();
-                var (pline, _) = pLoc != null ? Utilities.GetLinePosition(pLoc) : (-1, -1);
+                var (pline, _) = pLoc != null ? SymbolUtilities.GetLinePosition(pLoc) : (-1, -1);
                 Document? doc = pLoc != null ? solution.GetDocument(pLoc.SourceTree) : null;
-                string projectDisplay = Utilities.BuildProjectDisplayNameFrom(project, doc);
-                string filePathDisplay = Utilities.GetDisplayPathForDocument(doc, pLoc?.SourceTree, project, solution);
-                string displayName = Utilities.GetDisplayNameForDocument(doc, pLoc?.SourceTree);
-                string fullPath = Utilities.GetFullPathForDocument(doc, pLoc?.SourceTree) ?? "(generated)";
-                string projectFilePath = Utilities.GetProjectFilePath(project, doc) ?? "(unknown)";
+                string projectDisplay = SymbolUtilities.BuildProjectDisplayNameFrom(project, doc);
+                string filePathDisplay = PathUtilities.GetDisplayPathForDocument(doc, pLoc?.SourceTree, project, solution);
+                string displayName = PathUtilities.GetDisplayNameForDocument(doc, pLoc?.SourceTree);
+                string fullPath = PathUtilities.GetFullPathForDocument(doc, pLoc?.SourceTree) ?? "(generated)";
+                string projectFilePath = PathUtilities.GetProjectFilePath(project, doc) ?? "(unknown)";
                 string declaredProject = doc?.Project?.Name ?? "(null)";
                 string fallbackProject = project?.Name ?? "(null)";
-                string icon = Utilities.GetIconForSymbolKind("Parameter");
+                string icon = SymbolUtilities.GetIconForSymbolKind(SymbolKindParameter);
 
                 if (DiagnosticMode)
                 {
@@ -378,8 +398,8 @@ public static class Analyzer
         INamedTypeSymbol type,
         Project project,
         Solution solution,
-        bool includeInternal,
         bool includePublic,
+        bool includeInternal,
         bool excludeGenerated,
         HashSet<ProjectId> solutionProjectIds,
         Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource,
@@ -389,41 +409,33 @@ public static class Analyzer
         bool referenced = false;
         if (prop.IsImplicitlyDeclared) return (findings, referenced);
         var acc = prop.DeclaredAccessibility;
-        if (acc != Accessibility.Private && !includeInternal && !includePublic) return (findings, referenced);
+        if (acc == Accessibility.Public && !includePublic) return (findings, referenced);
+        if (acc == Accessibility.Internal && !includeInternal) return (findings, referenced);
+        if (acc == Accessibility.Protected || acc == Accessibility.ProtectedOrInternal) return (findings, referenced);
         if (prop.IsOverride || prop.ExplicitInterfaceImplementations.Any()) return (findings, referenced);
-        var defLocProp = Utilities.GetSourceLocation(prop);
+        var defLocProp = SymbolUtilities.GetSourceLocation(prop);
 
         // Skip if property declaration is in an excluded folder
-        if (defLocProp != null && Utilities.SourceTreeIsExcluded(defLocProp.SourceTree)) return (findings, referenced);
+        if (defLocProp != null && PathUtilities.SourceTreeIsExcluded(defLocProp.SourceTree, _config.ExclusionPatterns)) return (findings, referenced);
 
-        if (excludeGenerated && defLocProp != null && Utilities.IsGenerated(defLocProp.SourceTree)) return (findings, referenced);
-        var defLocs = prop.Locations.Where(l => l.IsInSource).ToList();
-        var allLocations = await _cache.GetSymbolLocationsAsync(prop, project.Id, solution, solutionProjectIds, isReferenceInSolutionSource);
-        int refCount = allLocations.Count(l => !defLocs.Any(d =>
-            d.SourceTree == l.SourceTree &&
-            d.SourceSpan.Equals(l.SourceSpan)));
+        if (excludeGenerated && defLocProp != null && SymbolUtilities.IsGenerated(defLocProp.SourceTree, _config.GeneratedCodeMarkers)) return (findings, referenced);
 
-        // Fallback: manual semantic search
-        if (refCount == 0)
-        {
-            if (await SemanticSearch.ManualSemanticSearchAsync(prop, solution, solutionProjectIds))
-                refCount = 1;
-        }
+        var (refCount, _) = await CheckSymbolReferencesAsync(prop, project, solution, solutionProjectIds, isReferenceInSolutionSource);
 
         if (refCount > 0)
             referenced = true;
         else
         {
-            var (line, _) = defLocProp != null ? Utilities.GetLinePosition(defLocProp) : (-1, -1);
+            var (line, _) = defLocProp != null ? SymbolUtilities.GetLinePosition(defLocProp) : (-1, -1);
             Document? doc = defLocProp != null ? solution.GetDocument(defLocProp.SourceTree) : null;
-            string projectDisplay = Utilities.BuildProjectDisplayNameFrom(project, doc);
-            string filePathDisplay = Utilities.GetDisplayPathForDocument(doc, defLocProp?.SourceTree, project, solution);
-            string displayName = Utilities.GetDisplayNameForDocument(doc, defLocProp?.SourceTree);
-            string fullPath = Utilities.GetFullPathForDocument(doc, defLocProp?.SourceTree) ?? "(generated)";
-            string projectFilePath = Utilities.GetProjectFilePath(project, doc) ?? "(unknown)";
+            string projectDisplay = SymbolUtilities.BuildProjectDisplayNameFrom(project, doc);
+            string filePathDisplay = PathUtilities.GetDisplayPathForDocument(doc, defLocProp?.SourceTree, project, solution);
+            string displayName = PathUtilities.GetDisplayNameForDocument(doc, defLocProp?.SourceTree);
+            string fullPath = PathUtilities.GetFullPathForDocument(doc, defLocProp?.SourceTree) ?? "(generated)";
+            string projectFilePath = PathUtilities.GetProjectFilePath(project, doc) ?? "(unknown)";
             string declaredProject = doc?.Project?.Name ?? "(null)";
             string fallbackProject = project?.Name ?? "(null)";
-            string icon = Utilities.GetIconForSymbolKind("Property");
+            string icon = SymbolUtilities.GetIconForSymbolKind(SymbolKindProperty);
 
             if (DiagnosticMode)
             {
@@ -462,8 +474,8 @@ public static class Analyzer
         INamedTypeSymbol type,
         Project project,
         Solution solution,
-        bool includeInternal,
         bool includePublic,
+        bool includeInternal,
         bool excludeGenerated,
         HashSet<ProjectId> solutionProjectIds,
         Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource,
@@ -473,40 +485,32 @@ public static class Analyzer
         bool referenced = false;
         if (field.IsImplicitlyDeclared) return (findings, referenced);
         var acc = field.DeclaredAccessibility;
-        if (acc != Accessibility.Private && !includeInternal && !includePublic) return (findings, referenced);
-        var defLocField = Utilities.GetSourceLocation(field);
+        if (acc == Accessibility.Public && !includePublic) return (findings, referenced);
+        if (acc == Accessibility.Internal && !includeInternal) return (findings, referenced);
+        if (acc == Accessibility.Protected || acc == Accessibility.ProtectedOrInternal) return (findings, referenced);
+        var defLocField = SymbolUtilities.GetSourceLocation(field);
 
         // Skip if field declaration is in an excluded folder
-        if (defLocField != null && Utilities.SourceTreeIsExcluded(defLocField.SourceTree)) return (findings, referenced);
+        if (defLocField != null && PathUtilities.SourceTreeIsExcluded(defLocField.SourceTree, _config.ExclusionPatterns)) return (findings, referenced);
 
-        if (excludeGenerated && defLocField != null && Utilities.IsGenerated(defLocField.SourceTree)) return (findings, referenced);
-        var defLocs = field.Locations.Where(l => l.IsInSource).ToList();
-        var allLocations = await _cache.GetSymbolLocationsAsync(field, project.Id, solution, solutionProjectIds, isReferenceInSolutionSource);
-        int refCount = allLocations.Count(l => !defLocs.Any(d =>
-            d.SourceTree == l.SourceTree &&
-            d.SourceSpan.Equals(l.SourceSpan)));
+        if (excludeGenerated && defLocField != null && SymbolUtilities.IsGenerated(defLocField.SourceTree, _config.GeneratedCodeMarkers)) return (findings, referenced);
 
-        // Fallback: manual semantic search
-        if (refCount == 0)
-        {
-            if (await SemanticSearch.ManualSemanticSearchAsync(field, solution, solutionProjectIds))
-                refCount = 1;
-        }
+        var (refCount, _) = await CheckSymbolReferencesAsync(field, project, solution, solutionProjectIds, isReferenceInSolutionSource);
 
         if (refCount > 0)
             referenced = true;
         else
         {
-            var (line, _) = defLocField != null ? Utilities.GetLinePosition(defLocField) : (-1, -1);
+            var (line, _) = defLocField != null ? SymbolUtilities.GetLinePosition(defLocField) : (-1, -1);
             Document? doc = defLocField != null ? solution.GetDocument(defLocField.SourceTree) : null;
-            string projectDisplay = Utilities.BuildProjectDisplayNameFrom(project, doc);
-            string filePathDisplay = Utilities.GetDisplayPathForDocument(doc, defLocField?.SourceTree, project, solution);
-            string displayName = Utilities.GetDisplayNameForDocument(doc, defLocField?.SourceTree);
-            string fullPath = Utilities.GetFullPathForDocument(doc, defLocField?.SourceTree) ?? "(generated)";
-            string projectFilePath = Utilities.GetProjectFilePath(project, doc) ?? "(unknown)";
+            string projectDisplay = SymbolUtilities.BuildProjectDisplayNameFrom(project, doc);
+            string filePathDisplay = PathUtilities.GetDisplayPathForDocument(doc, defLocField?.SourceTree, project, solution);
+            string displayName = PathUtilities.GetDisplayNameForDocument(doc, defLocField?.SourceTree);
+            string fullPath = PathUtilities.GetFullPathForDocument(doc, defLocField?.SourceTree) ?? "(generated)";
+            string projectFilePath = PathUtilities.GetProjectFilePath(project, doc) ?? "(unknown)";
             string declaredProject = doc?.Project?.Name ?? "(null)";
             string fallbackProject = project?.Name ?? "(null)";
-            string icon = Utilities.GetIconForSymbolKind("Field");
+            string icon = SymbolUtilities.GetIconForSymbolKind(SymbolKindField);
 
             if (DiagnosticMode)
             {
@@ -565,7 +569,7 @@ public static class Analyzer
         if (type.IsStatic) return findings;
 
         // Consider only declaration locations that are not in excluded path folders
-        var defTypeLocs = type.Locations.Where(l => l.IsInSource && !Utilities.SourceTreeIsExcluded(l.SourceTree)).ToList();
+        var defTypeLocs = type.Locations.Where(l => l.IsInSource && !PathUtilities.SourceTreeIsExcluded(l.SourceTree, _config.ExclusionPatterns)).ToList();
         if (defTypeLocs.Count == 0) return findings;
 
         // For interfaces, additionally check for implementations in the solution
@@ -599,19 +603,19 @@ public static class Analyzer
         if (typeRefCount == 0)
         {
             var loc = defTypeLocs.FirstOrDefault();
-            var (line, _) = loc != null ? Utilities.GetLinePosition(loc) : (-1, -1);
+            var (line, _) = loc != null ? SymbolUtilities.GetLinePosition(loc) : (-1, -1);
             var kind = isRecord ? "Record" : type.TypeKind.ToString();
 
             // Try to determine the project name from the declaration document if possible
             Document? doc = loc?.SourceTree != null ? solution.GetDocument(loc.SourceTree) : null;
-            string projectDisplay = Utilities.BuildProjectDisplayNameFrom(project, doc);
-            string filePathDisplay = Utilities.GetDisplayPathForDocument(doc, loc?.SourceTree, project, solution);
-            string displayName = Utilities.GetDisplayNameForDocument(doc, loc?.SourceTree);
-            string fullPath = Utilities.GetFullPathForDocument(doc, loc?.SourceTree) ?? "(generated)";
-            string projectFilePath = Utilities.GetProjectFilePath(project, doc) ?? "(unknown)";
+            string projectDisplay = SymbolUtilities.BuildProjectDisplayNameFrom(project, doc);
+            string filePathDisplay = PathUtilities.GetDisplayPathForDocument(doc, loc?.SourceTree, project, solution);
+            string displayName = PathUtilities.GetDisplayNameForDocument(doc, loc?.SourceTree);
+            string fullPath = PathUtilities.GetFullPathForDocument(doc, loc?.SourceTree) ?? "(generated)";
+            string projectFilePath = PathUtilities.GetProjectFilePath(project, doc) ?? "(unknown)";
             string declaredProject = doc?.Project?.Name ?? "(null)";
             string fallbackProject = project?.Name ?? "(null)";
-            string icon = Utilities.GetIconForSymbolKind("Type");
+            string icon = SymbolUtilities.GetIconForSymbolKind(SymbolKindType);
 
             if (DiagnosticMode)
             {
@@ -664,7 +668,7 @@ public static class Analyzer
                 }
                 if (impl is INamedTypeSymbol nt)
                 {
-                    var ntDefLocs = nt.Locations.Where(l => l.IsInSource && !Utilities.SourceTreeIsExcluded(l.SourceTree));
+                    var ntDefLocs = nt.Locations.Where(l => l.IsInSource && !PathUtilities.SourceTreeIsExcluded(l.SourceTree, _config.ExclusionPatterns));
                     if (ntDefLocs.Any(l => isReferenceInSolutionSource(l, solution, solutionProjectIds)))
                         return true;
                 }
@@ -735,6 +739,63 @@ public static class Analyzer
 
     // Cache instance
     private static readonly AnalyzerCache _cache = new();
+
+    /// <summary>
+    /// Check for interface method implementations
+    /// </summary>
+    private static async Task<int> CheckInterfaceReferencesAsync(
+        IMethodSymbol method,
+        INamedTypeSymbol type,
+        Solution solution,
+        HashSet<ProjectId> solutionProjectIds,
+        Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource)
+    {
+        int refCount = 0;
+        var interfaceMethod = GetImplementedInterfaceMethod(method, type);
+        if (interfaceMethod != null)
+        {
+            var interfaceRefs = await SymbolFinder.FindReferencesAsync(interfaceMethod, solution);
+            foreach (var rr in interfaceRefs)
+            {
+                foreach (var loc in rr.Locations)
+                {
+                    if (!isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds)) continue;
+                    bool isDefinitionLocation = interfaceMethod.Locations.Where(l => l.IsInSource).Any(d =>
+                        d.SourceTree == loc.Location.SourceTree &&
+                        d.SourceSpan.Equals(loc.Location.SourceSpan));
+                    if (!isDefinitionLocation) refCount++;
+                }
+            }
+        }
+        return refCount;
+    }
+
+    /// <summary>
+    /// Common method to check symbol references
+    /// </summary>
+    private static async Task<(int refCount, bool referenced)> CheckSymbolReferencesAsync(
+        ISymbol symbol,
+        Project project,
+        Solution solution,
+        HashSet<ProjectId> solutionProjectIds,
+        Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource)
+    {
+        var defLocations = symbol.Locations.Where(l => l.IsInSource).ToList();
+        var allLocations = await _cache.GetSymbolLocationsAsync(symbol, project.Id, solution, solutionProjectIds, isReferenceInSolutionSource);
+        int refCount = allLocations.Count(l => !defLocations.Any(d =>
+            d.SourceTree == l.SourceTree &&
+            d.SourceSpan.Equals(l.SourceSpan)));
+
+        // Fallback: manual semantic search
+        if (refCount == 0)
+        {
+            if (await SemanticSearch.ManualSemanticSearchAsync(symbol, solution, solutionProjectIds))
+                refCount = 1;
+        }
+
+        bool referenced = refCount > 0;
+        return (refCount, referenced);
+    }
 
     // Diagnostic mode
     public static bool DiagnosticMode { get; set; } = false;
