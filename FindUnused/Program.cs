@@ -1,6 +1,86 @@
 namespace FindUnused;
 
 /// <summary>
+/// Configuration options for the analyzer
+/// </summary>
+public class AnalyzerConfiguration
+{
+    public bool IncludePublicSymbols { get; set; } = true;
+    public bool IncludeInternalSymbols { get; set; } = true;
+    public bool ExcludeGeneratedCode { get; set; } = true;
+    public bool EnableReflectionDetection { get; set; } = true;
+    public bool EnableCrossProjectAnalysis { get; set; } = true;
+    public bool EnableEntryPointDetection { get; set; } = true;
+    public HashSet<string> AdditionalEntryPointPatterns { get; set; } = new();
+    public HashSet<string> CustomAttributesToIgnore { get; set; } = new();
+    public int MaxConcurrencyLevel { get; set; } = Environment.ProcessorCount;
+}
+
+/// <summary>
+/// Cache for project analysis results
+/// </summary>
+public class ProjectAnalysisCache
+{
+    public Dictionary<ISymbol, HashSet<Location>> SymbolLocations { get; } = new Dictionary<ISymbol, HashSet<Location>>(SymbolEqualityComparer.Default);
+}
+
+/// <summary>
+/// Cache for document analysis results
+/// </summary>
+public class DocumentAnalysisCache
+{
+    // Placeholder for document-level caching
+}
+
+/// <summary>
+/// Intelligent caching system for analyzer performance
+/// </summary>
+public class AnalyzerCache
+{
+    private readonly Dictionary<ProjectId, ProjectAnalysisCache> _projectCaches = new();
+    private readonly Dictionary<DocumentId, DocumentAnalysisCache> _documentCaches = new();
+
+    private ProjectAnalysisCache GetProjectCache(ProjectId projectId)
+    {
+        if (!_projectCaches.TryGetValue(projectId, out var cache))
+        {
+            cache = new ProjectAnalysisCache();
+            _projectCaches[projectId] = cache;
+        }
+        return cache;
+    }
+
+    public async Task<HashSet<Location>> GetSymbolLocationsAsync(ISymbol symbol, ProjectId projectId, Solution solution, HashSet<ProjectId> solutionProjectIds, Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource)
+    {
+        var cache = GetProjectCache(projectId);
+        if (cache.SymbolLocations.TryGetValue(symbol, out var locations))
+            return locations;
+
+        // Perform search and cache results
+        locations = await PerformSymbolSearchAsync(symbol, solution, solutionProjectIds, isReferenceInSolutionSource);
+        cache.SymbolLocations[symbol] = locations;
+        return locations;
+    }
+
+    private async Task<HashSet<Location>> PerformSymbolSearchAsync(ISymbol symbol, Solution solution, HashSet<ProjectId> solutionProjectIds, Func<Location, Solution, HashSet<ProjectId>, bool> isReferenceInSolutionSource)
+    {
+        var locations = new HashSet<Location>();
+        var references = await SymbolFinder.FindReferencesAsync(symbol, solution);
+        foreach (var rr in references)
+        {
+            foreach (var loc in rr.Locations)
+            {
+                if (isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds))
+                {
+                    locations.Add(loc.Location);
+                }
+            }
+        }
+        return locations;
+    }
+}
+
+/// <summary>
 /// Result object for analysis operations
 /// </summary>
 public record AnalysisResult
@@ -54,22 +134,20 @@ public class FindUnusedAnalyzer
     // Diagnostic mode: when true, prints extra diagnostic information per finding
     public static bool DiagnosticMode { get; set; } = false;
 
+    private static readonly AnalyzerCache _cache = new();
+
     private static JsonSerializerOptions GetOptions() => new() { WriteIndented = true };
 
     /// <summary>
     /// Run the analysis with specified parameters
     /// </summary>
     /// <param name="targetPath">Path to .slnx, .sln, .csproj file or folder to analyze</param>
-    /// <param name="includePublic">Include public symbols in analysis</param>
-    /// <param name="includeInternal">Include internal symbols in analysis</param>
-    /// <param name="excludeGenerated">Exclude generated code from analysis</param>
+    /// <param name="config">Configuration options for the analysis</param>
     /// <param name="progress">Optional progress reporter for UI updates</param>
     /// <returns>Analysis results</returns>
     public static async Task<AnalysisResult> RunAnalysisAsync(
         string targetPath,
-        bool includePublic = true,
-        bool includeInternal = true,
-        bool excludeGenerated = true,
+        AnalyzerConfiguration? config = null,
         IProgress<string>? progress = null)
     {
         // Input validation
@@ -89,6 +167,7 @@ public class FindUnusedAnalyzer
                 ErrorMessage = $"Target '{targetPath}' not found"
             };
         }
+        var analysisConfig = config ?? new AnalyzerConfiguration();
         var findings = new List<Finding>();
         try
         {
@@ -117,9 +196,9 @@ public class FindUnusedAnalyzer
                     solutionProjectIds,
                     projectDeclaredTypes,
                     declaredNamespaces,
-                    includePublic,
-                    includeInternal,
-                    excludeGenerated,
+                    analysisConfig.IncludePublicSymbols,
+                    analysisConfig.IncludeInternalSymbols,
+                    analysisConfig.ExcludeGeneratedCode,
                     IsReferenceInSolutionSource,
                     progress));
                 var projectFindingsArrays = await Task.WhenAll(projectTasks);
@@ -164,6 +243,22 @@ public class FindUnusedAnalyzer
         progress?.Report($"Loaded solution: {solution.FilePath ?? "(in-memory)"}");
         progress?.Report($"Projects: {solution.Projects.Count()}");
         var solutionProjectIds = new HashSet<ProjectId>(solution.Projects.Select(p => p.Id));
+
+        // Expand to include referenced projects for cross-project analysis
+        var expandedIds = new HashSet<ProjectId>(solutionProjectIds);
+        foreach (var projectId in solutionProjectIds)
+        {
+            var proj = solution.GetProject(projectId);
+            if (proj?.ProjectReferences != null)
+            {
+                foreach (var projectRef in proj.ProjectReferences)
+                {
+                    expandedIds.Add(projectRef.ProjectId);
+                }
+            }
+        }
+        solutionProjectIds = expandedIds;
+
         return (solution, solutionProjectIds);
     }
 
@@ -219,7 +314,7 @@ public class FindUnusedAnalyzer
             {
                 if (doc.Folders != null && doc.Folders.Count > 0)
                 {
-                    var folderPart = Path.Combine(doc.Folders.ToArray());
+                    var folderPart = Path.Combine([.. doc.Folders]);
                     var fileName = !string.IsNullOrEmpty(doc.FilePath) ? Path.GetFileName(doc.FilePath) : "(in-memory)";
                     return Path.Combine(folderPart, fileName);
                 }
@@ -578,15 +673,10 @@ public class FindUnusedAnalyzer
         if (acc == Accessibility.Protected || acc == Accessibility.ProtectedOrInternal) return (findings, referenced);
         var entry = compilation.GetEntryPoint(CancellationToken.None);
         if (entry != null && SymbolEqualityComparer.Default.Equals(entry, method)) return (findings, referenced);
-        // Skip API controller methods and test methods as they are entry points and should not be considered unused
+        // Skip entry point methods as they are not considered unused
         if (IsEntryPointMethod(method, type))
         {
             return (findings, false); // Return referenced=true to indicate it's an entry point
-        }
-
-        if (IsTestMethod(method, type))
-        {
-            return (findings, false); // Return referenced=true to indicate it's a test method
         }
         var defLoc = GetSourceLocation(method);
 
@@ -594,21 +684,12 @@ public class FindUnusedAnalyzer
         if (defLoc != null && SourceTreeIsExcluded(defLoc.SourceTree)) return (findings, referenced);
 
         if (excludeGenerated && defLoc != null && IsGenerated(defLoc.SourceTree)) return (findings, referenced);
-        // Find references across the solution
-        var references = await SymbolFinder.FindReferencesAsync(method, solution);
+        // Find references across the solution using cache
         var defLocations = method.Locations.Where(l => l.IsInSource).ToList();
-        int refCount = 0;
-        foreach (var rr in references)
-        {
-            foreach (var loc in rr.Locations)
-            {
-                if (!isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds)) continue;
-                bool isDefinitionLocation = defLocations.Any(d =>
-                    d.SourceTree == loc.Location.SourceTree &&
-                    d.SourceSpan.Equals(loc.Location.SourceSpan));
-                if (!isDefinitionLocation) refCount++;
-            }
-        }
+        var allLocations = await _cache.GetSymbolLocationsAsync(method, project.Id, solution, solutionProjectIds, isReferenceInSolutionSource);
+        int refCount = allLocations.Count(l => !defLocations.Any(d =>
+            d.SourceTree == l.SourceTree &&
+            d.SourceSpan.Equals(l.SourceSpan)));
 
         // If no direct references found, check if this method implements an interface method
         if (refCount == 0)
@@ -629,6 +710,13 @@ public class FindUnusedAnalyzer
                     }
                 }
             }
+        }
+
+        // Fallback: manual semantic search for all symbols
+        if (refCount == 0)
+        {
+            if (await ManualSemanticSearchForAllSymbolsAsync(method, solution, solutionProjectIds))
+                refCount = 1;
         }
 
         if (refCount > 0)
@@ -779,20 +867,19 @@ public class FindUnusedAnalyzer
         if (defLocProp != null && SourceTreeIsExcluded(defLocProp.SourceTree)) return (findings, referenced);
 
         if (excludeGenerated && defLocProp != null && IsGenerated(defLocProp.SourceTree)) return (findings, referenced);
-        var refs = await SymbolFinder.FindReferencesAsync(prop, solution);
         var defLocs = prop.Locations.Where(l => l.IsInSource).ToList();
-        int refCount = 0;
-        foreach (var rr in refs)
+        var allLocations = await _cache.GetSymbolLocationsAsync(prop, project.Id, solution, solutionProjectIds, isReferenceInSolutionSource);
+        int refCount = allLocations.Count(l => !defLocs.Any(d =>
+            d.SourceTree == l.SourceTree &&
+            d.SourceSpan.Equals(l.SourceSpan)));
+
+        // Fallback: manual semantic search
+        if (refCount == 0)
         {
-            foreach (var loc in rr.Locations)
-            {
-                if (!isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds)) continue;
-                bool isDefinitionLocation = defLocs.Any(d =>
-                    d.SourceTree == loc.Location.SourceTree &&
-                    d.SourceSpan.Equals(loc.Location.SourceSpan));
-                if (!isDefinitionLocation) refCount++;
-            }
+            if (await ManualSemanticSearchForAllSymbolsAsync(prop, solution, solutionProjectIds))
+                refCount = 1;
         }
+
         if (refCount > 0)
             referenced = true;
         else
@@ -860,20 +947,19 @@ public class FindUnusedAnalyzer
         if (defLocField != null && SourceTreeIsExcluded(defLocField.SourceTree)) return (findings, referenced);
 
         if (excludeGenerated && defLocField != null && IsGenerated(defLocField.SourceTree)) return (findings, referenced);
-        var refs = await SymbolFinder.FindReferencesAsync(field, solution);
         var defLocs = field.Locations.Where(l => l.IsInSource).ToList();
-        int refCount = 0;
-        foreach (var rr in refs)
+        var allLocations = await _cache.GetSymbolLocationsAsync(field, project.Id, solution, solutionProjectIds, isReferenceInSolutionSource);
+        int refCount = allLocations.Count(l => !defLocs.Any(d =>
+            d.SourceTree == l.SourceTree &&
+            d.SourceSpan.Equals(l.SourceSpan)));
+
+        // Fallback: manual semantic search
+        if (refCount == 0)
         {
-            foreach (var loc in rr.Locations)
-            {
-                if (!isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds)) continue;
-                bool isDefinitionLocation = defLocs.Any(d =>
-                    d.SourceTree == loc.Location.SourceTree &&
-                    d.SourceSpan.Equals(loc.Location.SourceSpan));
-                if (!isDefinitionLocation) refCount++;
-            }
+            if (await ManualSemanticSearchForAllSymbolsAsync(field, solution, solutionProjectIds))
+                refCount = 1;
         }
+
         if (refCount > 0)
             referenced = true;
         else
@@ -957,20 +1043,10 @@ public class FindUnusedAnalyzer
         }
 
         // General type references (variable declarations, cast, typeof, generics, attributes, etc.)
-        var typeReferences = await SymbolFinder.FindReferencesAsync(type, solution);
-        int typeRefCount = 0;
-        foreach (var rr in typeReferences)
-        {
-            foreach (var loc in rr.Locations)
-            {
-                if (!isReferenceInSolutionSource(loc.Location, solution, solutionProjectIds)) continue;
-                // Exclude the type's own declaration locations
-                bool isDefinitionLocation = defTypeLocs.Any(d =>
-                    d.SourceTree == loc.Location.SourceTree &&
-                    d.SourceSpan.Equals(loc.Location.SourceSpan));
-                if (!isDefinitionLocation) typeRefCount++;
-            }
-        }
+        var allTypeLocations = await _cache.GetSymbolLocationsAsync(type, project.Id, solution, solutionProjectIds, isReferenceInSolutionSource);
+        int typeRefCount = allTypeLocations.Count(l => !defTypeLocs.Any(d =>
+            d.SourceTree == l.SourceTree &&
+            d.SourceSpan.Equals(l.SourceSpan)));
 
         // Fallback: do a manual semantic scan if SymbolFinder didn't find any references
         if (typeRefCount == 0)
@@ -1057,6 +1133,93 @@ public class FindUnusedAnalyzer
         return false;
     }
 
+    private static Type[] GetSyntaxPatternsForSymbol(SymbolKind kind)
+    {
+        return kind switch
+        {
+            SymbolKind.Method => new[] { typeof(InvocationExpressionSyntax), typeof(IdentifierNameSyntax) },
+            SymbolKind.Property => new[] { typeof(MemberAccessExpressionSyntax), typeof(IdentifierNameSyntax) },
+            SymbolKind.Field => new[] { typeof(MemberAccessExpressionSyntax), typeof(IdentifierNameSyntax) },
+            SymbolKind.NamedType => new[] { typeof(IdentifierNameSyntax), typeof(GenericNameSyntax) },
+            _ => new[] { typeof(IdentifierNameSyntax) }
+        };
+    }
+
+    private static async Task<bool> IsSymbolUsedInNode(ISymbol symbol, SyntaxNode node, SemanticModel model)
+    {
+        try
+        {
+            var symbolInfo = model.GetSymbolInfo(node).Symbol;
+            ISymbol? foundSymbol = symbolInfo;
+            if (foundSymbol == null)
+            {
+                var tinfo = model.GetTypeInfo(node).Type;
+                foundSymbol = tinfo;
+            }
+            if (foundSymbol == null) return false;
+            // Compare original definitions
+            var symToCompare = (foundSymbol is IMethodSymbol ms && ms.ReducedFrom != null) ? ms.ReducedFrom : foundSymbol;
+            var target = symbol.OriginalDefinition ?? symbol;
+            if (SymbolEqualityComparer.Default.Equals(symToCompare.OriginalDefinition ?? symToCompare, target))
+            {
+                // Ensure not the symbol's own declaration
+                var defLocs = symbol.Locations.Where(l => l.IsInSource).ToList();
+                bool isDef = defLocs.Any(d => d.SourceTree == node.SyntaxTree && d.SourceSpan.Equals(node.Span));
+                if (!isDef)
+                {
+                    return true;
+                }
+            }
+            // Check for reflection usage
+            if (IsReflectionUsagePattern(symbol, node, model))
+            {
+                return true;
+            }
+        }
+        catch
+        {
+            // Ignore semantic exceptions
+        }
+        return false;
+    }
+
+    private static async Task<bool> ManualSemanticSearchForAllSymbolsAsync(
+        ISymbol symbol,
+        Solution solution,
+        HashSet<ProjectId> solutionProjectIds)
+    {
+        var shortName = symbol.Name;
+        foreach (var project in solution.Projects)
+        {
+            foreach (var document in project.Documents)
+            {
+                if (DocumentIsExcluded(document)) continue;
+                if (!document.SupportsSyntaxTree) continue;
+                var root = await document.GetSyntaxRootAsync();
+                if (root == null) continue;
+
+                var text = root.GetText().ToString();
+                if (!text.Contains(shortName)) continue;
+
+                var model = await document.GetSemanticModelAsync();
+                if (model == null) continue;
+
+                // Search for various syntax patterns
+                var patterns = GetSyntaxPatternsForSymbol(symbol.Kind);
+                foreach (var pattern in patterns)
+                {
+                    var nodes = root.DescendantNodes().Where(n => pattern.IsAssignableFrom(n.GetType()));
+                    foreach (var node in nodes)
+                    {
+                        if (await IsSymbolUsedInNode(symbol, node, model))
+                            return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     private static async Task<bool> CheckDerivedClassesAsync(
         INamedTypeSymbol type,
         Solution solution,
@@ -1135,11 +1298,48 @@ public class FindUnusedAnalyzer
     {
         if (tree == null) return false;
         var text = tree.GetText();
-        var first = text.Lines.Take(5).Select(l => l.ToString()).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
-        if (first == null) return false;
-        var markers = new[] { "<auto-generated", "generated by", "<autogenerated" };
-        var low = first.ToLowerInvariant();
-        return markers.Any(m => low.Contains(m));
+
+        // Enhanced patterns for modern .NET
+        var markers = new[]
+        {
+            "<auto-generated", "generated by", "<autogenerated",
+            "// <auto-generated", "// This code generated by",
+            "[GeneratedCode]", "@generated", "partial class",
+            "[JsonSerializable]", "[CompilerGenerated]"
+        };
+
+        // Check file-level attributes
+        var root = tree.GetRoot();
+        if (root != null)
+        {
+            var attributes = root.DescendantNodes().OfType<AttributeListSyntax>();
+            foreach (var attrList in attributes)
+            {
+                foreach (var attr in attrList.Attributes)
+                {
+                    var attrName = attr.Name.ToString().ToLowerInvariant();
+                    if (attrName.Contains("generatedcode") ||
+                        attrName.Contains("jsonserializable") ||
+                        attrName.Contains("compilergenerated"))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Check file header comments and directives
+        var lines = text.Lines.Take(10);
+        foreach (var line in lines)
+        {
+            var lowerLine = line.ToString().ToLowerInvariant();
+            if (markers.Any(marker => lowerLine.Contains(marker)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsNamespaceAllowed(INamespaceSymbol nsSymbol, HashSet<string> declaredNamespaces)
@@ -1147,24 +1347,48 @@ public class FindUnusedAnalyzer
         // If declaredNamespaces was left intentionally empty (no filtering), allow everything
         if (declaredNamespaces == null || declaredNamespaces.Count == 0)
             return true;
-        // If the type is in the global namespace, allow only if solution declared global types (empty string)
+
+        // If the type is in the global namespace, allow only if solution declared global types
         if (nsSymbol == null || nsSymbol.IsGlobalNamespace)
             return declaredNamespaces.Contains(string.Empty);
+
         var ns = nsSymbol.ToDisplayString();
-        if (string.IsNullOrEmpty(ns)) return declaredNamespaces.Contains(string.Empty);
-        // Allow if any declared namespace equals the namespace or is a parent (prefix match)
+
+        // Exact match
+        if (declaredNamespaces.Contains(ns))
+            return true;
+
+        // Parent namespace match (looser matching)
+        var nsParts = ns.Split('.');
+        for (int i = 1; i <= nsParts.Length; i++)
+        {
+            var parentNs = string.Join(".", nsParts.Take(i));
+            if (declaredNamespaces.Contains(parentNs))
+                return true;
+
+            // Also check for partial matches
+            foreach (var declared in declaredNamespaces)
+            {
+                if (declared.StartsWith(parentNs + ".", StringComparison.Ordinal))
+                    return true;
+            }
+        }
+
+        // Fuzzy matching for similar namespaces
         foreach (var declared in declaredNamespaces)
         {
-            if (string.IsNullOrEmpty(declared))
-            {
-                // declared global namespace doesn't match named namespaces
-                continue;
-            }
-            if (ns.Equals(declared, StringComparison.Ordinal) ||
-                ns.StartsWith(declared + ".", StringComparison.Ordinal))
+            if (AreNamespacesRelated(ns, declared))
                 return true;
         }
+
         return false;
+    }
+
+    private static bool AreNamespacesRelated(string ns1, string ns2)
+    {
+        // Simple check: if one is prefix of the other
+        return ns1.StartsWith(ns2 + ".", StringComparison.Ordinal) ||
+               ns2.StartsWith(ns1 + ".", StringComparison.Ordinal);
     }
 
     private static async Task<Solution?> LoadSolutionFromPath(string targetPath, MSBuildWorkspace workspace)
@@ -1291,6 +1515,13 @@ public class FindUnusedAnalyzer
                                     return true;
                             }
                         }
+                        // Check for reflection usage patterns
+                        if (IsReflectionUsagePattern(typeSymbol, node, model))
+                        {
+                            var doc = solution.GetDocument(node.SyntaxTree);
+                            if (doc != null && solutionProjectIds.Contains(doc.Project.Id))
+                                return true;
+                        }
                     }
                     catch
                     {
@@ -1399,27 +1630,172 @@ public class FindUnusedAnalyzer
     {
         if (method == null) return false;
 
-        // API Controller methods are entry points
-        if (IsApiControllerMethod(containingType))
+        // Existing support
+        if (IsApiControllerMethod(containingType)) return true;
+        if (IsTestMethod(method, containingType)) return true;
+
+        // Add modern framework support
+        if (IsGrpcServiceMethod(method, containingType)) return true;
+        if (IsSignalRHubMethod(method, containingType)) return true;
+        if (IsBlazorComponentMethod(method, containingType)) return true;
+        if (IsBackgroundServiceMethod(method, containingType)) return true;
+
+        // Add event handler detection
+        if (IsEventHandlerMethod(method, containingType)) return true;
+
+        // Add DI configuration detection
+        if (IsDependencyInjectionMethod(method, containingType)) return true;
+
+        return false;
+    }
+    /// <summary>
+    /// Check if a method is a gRPC service method
+    /// </summary>
+    private static bool IsGrpcServiceMethod(IMethodSymbol method, INamedTypeSymbol containingType)
+    {
+        if (containingType?.BaseType == null) return false;
+        var baseTypeName = containingType.BaseType.Name.ToLowerInvariant();
+        return baseTypeName.Contains("servicebase") &&
+               method.MethodKind == MethodKind.Ordinary;
+    }
+
+    /// <summary>
+    /// Check if a method is a SignalR hub method
+    /// </summary>
+    private static bool IsSignalRHubMethod(IMethodSymbol method, INamedTypeSymbol containingType)
+    {
+        if (containingType?.BaseType == null) return false;
+
+        // Check if the class inherits from SignalR Hub
+        var baseTypeName = containingType.BaseType.Name.ToLowerInvariant();
+        if (baseTypeName == "hub" && method.DeclaredAccessibility == Accessibility.Public)
         {
             return true;
         }
 
-        // Check for HTTP-related attributes that indicate web API endpoints
-        var httpAttributes = new[]
-        {
-        "HttpGetAttribute", "HttpPostAttribute", "HttpPutAttribute", "HttpDeleteAttribute",
-        "HttpPatchAttribute", "RouteAttribute", "AcceptVerbsAttribute"
-    };
+        // Check for SignalR hub interfaces
+        return containingType.AllInterfaces.Any(iface =>
+            iface.Name.Equals("Hub", StringComparison.OrdinalIgnoreCase));
+    }
 
-        foreach (var attr in method.GetAttributes())
+    /// <summary>
+    /// Check if a method is a Blazor component method
+    /// </summary>
+    private static bool IsBlazorComponentMethod(IMethodSymbol method, INamedTypeSymbol containingType)
+    {
+        if (containingType?.BaseType == null) return false;
+
+        // Check if the class inherits from Blazor ComponentBase
+        var baseTypeName = containingType.BaseType.Name.ToLowerInvariant();
+        if (baseTypeName == "componentbase")
         {
-            var attrName = attr.AttributeClass?.Name;
-            if (attrName != null && httpAttributes.Any(httpAttr =>
-                attrName.Equals(httpAttr, StringComparison.OrdinalIgnoreCase)))
+            // Blazor lifecycle methods
+            if (method.Name.StartsWith("On", StringComparison.Ordinal) ||
+                method.Name.StartsWith("Handle", StringComparison.Ordinal))
             {
                 return true;
             }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a method is a background service method
+    /// </summary>
+    private static bool IsBackgroundServiceMethod(IMethodSymbol method, INamedTypeSymbol containingType)
+    {
+        if (containingType?.BaseType == null) return false;
+
+        // Check if the class inherits from BackgroundService
+        var baseTypeName = containingType.BaseType.Name.ToLowerInvariant();
+        if (baseTypeName == "backgroundservice")
+        {
+            return method.Name == "ExecuteAsync" ||
+                   method.Name.StartsWith("On", StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a method is an event handler method
+    /// </summary>
+    private static bool IsEventHandlerMethod(IMethodSymbol method, INamedTypeSymbol containingType)
+    {
+        var parameters = method.Parameters;
+        if (parameters.Length < 2) return false;
+
+        var firstParam = parameters[0].Type;
+        var secondParam = parameters[1].Type;
+
+        // Common event handler pattern: void MethodName(object sender, EventArgs e)
+        if (firstParam.Name == "Object" &&
+            (secondParam.Name.EndsWith("EventArgs", StringComparison.Ordinal) ||
+             secondParam.Name == "EventArgs"))
+        {
+            return true;
+        }
+
+        // Check for event handler attributes
+        return method.GetAttributes().Any(attr =>
+            attr.AttributeClass?.Name.EndsWith("EventHandlerAttribute", StringComparison.OrdinalIgnoreCase) == true);
+    }
+
+    /// <summary>
+    /// Check if a method is used in dependency injection configuration
+    /// </summary>
+    private static bool IsDependencyInjectionMethod(IMethodSymbol method, INamedTypeSymbol containingType)
+    {
+        if (containingType == null) return false;
+
+        var methodName = method.Name.ToLowerInvariant();
+        var className = containingType.Name.ToLowerInvariant();
+
+        // Startup/Program class methods for DI configuration
+        if ((className == "startup" || className == "program") &&
+            (methodName.Contains("configure") || methodName.Contains("add") || methodName.Contains("service")))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+
+    /// <summary>
+    /// Check if a symbol is used in reflection patterns
+    /// </summary>
+    private static bool IsReflectionUsagePattern(ISymbol symbol, SyntaxNode node, SemanticModel model)
+    {
+        // Check for GetMethod, GetProperty, GetField calls
+        if (node is InvocationExpressionSyntax invocation)
+        {
+            var methodName = invocation.Expression.ToString();
+            if (methodName.Contains("GetMethod") ||
+                methodName.Contains("GetProperty") ||
+                methodName.Contains("GetField"))
+            {
+                // Check if the symbol being searched for matches our target
+                var symbolName = symbol.Name;
+                return invocation.ArgumentList.Arguments.Any(arg =>
+                    arg.Expression.ToString().Contains($"\"{symbolName}\"") ||
+                    arg.Expression.ToString().Contains($"'{symbolName}'"));
+            }
+        }
+
+        // Check for Activator.CreateInstance usage
+        if (node is ObjectCreationExpressionSyntax creation &&
+            creation.Type.ToString().Contains(symbol.ContainingType?.Name ?? ""))
+        {
+            return true;
+        }
+
+        // Check for typeof() expressions
+        if (node is TypeOfExpressionSyntax typeOf &&
+            typeOf.Type.ToString() == symbol.ContainingType?.Name)
+        {
+            return true;
         }
 
         return false;
@@ -1470,14 +1846,8 @@ public class FindUnusedAnalyzer
             string targetPath = args[0];
             try
             {
-                var result = await FindUnusedAnalyzer.RunAnalysisAsync(targetPath);
-                if (result.Success)
-                {
-                    var json = JsonSerializer.Serialize(result.Findings, new JsonSerializerOptions { WriteIndented = false });
-                    Console.WriteLine(json);
-                    Environment.Exit(0);
-                }
-                else
+                var result = await RunAnalysisAsync(targetPath, new AnalyzerConfiguration());
+                if (!result.Success)
                 {
                     Console.Error.WriteLine($"Analysis failed: {result.ErrorMessage}");
                     Environment.Exit(1);
