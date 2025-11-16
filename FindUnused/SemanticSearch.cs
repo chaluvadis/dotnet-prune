@@ -8,23 +8,26 @@ public static class SemanticSearch
     /// <summary>
     /// Checks if a symbol is used in a specific syntax node
     /// </summary>
-    public static async Task<bool> IsSymbolUsedInNode(ISymbol symbol, SyntaxNode node, SemanticModel model)
+    public static async Task<bool> IsSymbolUsedInNode(
+        ISymbol symbol,
+        SyntaxNode node,
+        SemanticModel model
+    )
     {
         try
         {
-            var symbolInfo = model.GetSymbolInfo(node).Symbol;
-            ISymbol? foundSymbol = symbolInfo;
-            if (foundSymbol == null)
-            {
-                var tinfo = model.GetTypeInfo(node).Type;
-                foundSymbol = tinfo;
-            }
+            ISymbol? foundSymbol = model.GetSymbolInfo(node).Symbol;
+            foundSymbol ??= model.GetTypeInfo(node).Type;
             if (foundSymbol == null) return false;
+
             // Resolve aliases
             if (foundSymbol is IAliasSymbol alias) foundSymbol = alias.Target;
+
             // Compare original definitions
             var symToCompare = (foundSymbol is IMethodSymbol ms && ms.ReducedFrom != null) ? ms.ReducedFrom : foundSymbol;
+
             var target = symbol.OriginalDefinition ?? symbol;
+
             if (SymbolEqualityComparer.Default.Equals(symToCompare.OriginalDefinition ?? symToCompare, target))
             {
                 // Ensure not the symbol's own declaration
@@ -73,9 +76,13 @@ public static class SemanticSearch
                     if (!text.Contains(shortName)) continue;
                     var nameNodes = root.DescendantNodes().OfType<SimpleNameSyntax>()
                                           .Where(n => n.Identifier.ValueText == shortName);
+
                     if (!nameNodes.Any()) continue;
+
                     var model = await document.GetSemanticModelAsync();
+
                     if (model == null) continue;
+
                     foreach (var node in nameNodes)
                     {
                         try
@@ -160,11 +167,11 @@ public static class SemanticSearch
     {
         return kind switch
         {
-            SymbolKind.Method => new[] { typeof(InvocationExpressionSyntax), typeof(IdentifierNameSyntax) },
-            SymbolKind.Property => new[] { typeof(MemberAccessExpressionSyntax), typeof(IdentifierNameSyntax) },
-            SymbolKind.Field => new[] { typeof(MemberAccessExpressionSyntax), typeof(IdentifierNameSyntax) },
-            SymbolKind.NamedType => new[] { typeof(IdentifierNameSyntax), typeof(GenericNameSyntax) },
-            _ => new[] { typeof(IdentifierNameSyntax) }
+            SymbolKind.Method => [typeof(InvocationExpressionSyntax), typeof(IdentifierNameSyntax)],
+            SymbolKind.Property => [typeof(MemberAccessExpressionSyntax), typeof(IdentifierNameSyntax)],
+            SymbolKind.Field => [typeof(MemberAccessExpressionSyntax), typeof(IdentifierNameSyntax)],
+            SymbolKind.NamedType => [typeof(IdentifierNameSyntax), typeof(GenericNameSyntax), typeof(LiteralExpressionSyntax)],
+            _ => [typeof(IdentifierNameSyntax)]
         };
     }
 
@@ -175,22 +182,116 @@ public static class SemanticSearch
     {
         try
         {
-            // Check for GetMethod, GetProperty, GetField calls on System.Type
+            // Check for string literals used in reflection calls
+            if (node is LiteralExpressionSyntax literal && literal.Kind() == SyntaxKind.StringLiteralExpression)
+            {
+                var value = literal.Token.ValueText;
+                // Check if this literal matches the symbol name or full name
+                bool nameMatches = value == symbol.Name;
+                if (symbol is INamedTypeSymbol typeSymbol)
+                {
+                    nameMatches = nameMatches || value == typeSymbol.ToDisplayString();
+                }
+                if (nameMatches)
+                {
+                    // Check if this literal is an argument to a reflection method
+                    var argument = literal.Parent as ArgumentSyntax;
+                    if (argument != null)
+                    {
+                        var argumentList = argument.Parent as ArgumentListSyntax;
+                        if (argumentList != null)
+                        {
+                            var inv = argumentList.Parent as InvocationExpressionSyntax;
+                            if (inv != null)
+                            {
+                                var methodSymbol = model.GetSymbolInfo(inv).Symbol as IMethodSymbol;
+                                if (methodSymbol != null)
+                                {
+                                    // Type.GetType, Assembly.GetType
+                                    if (methodSymbol.Name == "GetType" &&
+                                        (methodSymbol.ContainingType?.Name == "Type" || methodSymbol.ContainingType?.Name == "Assembly"))
+                                    {
+                                        return true;
+                                    }
+                                    // Type.GetMethod, GetProperty, etc.
+                                    if ((methodSymbol.Name == "GetMethod" || methodSymbol.Name == "GetProperty" ||
+                                         methodSymbol.Name == "GetField" || methodSymbol.Name == "GetNestedType") &&
+                                        methodSymbol.ContainingType?.Name == "Type")
+                                    {
+                                        return true;
+                                    }
+                                    // Activator.CreateInstance with string arguments
+                                    if (methodSymbol.Name == "CreateInstance" && methodSymbol.ContainingType?.Name == "Activator")
+                                    {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check for GetMethod, GetProperty, GetField, GetNestedType calls on System.Type
             if (node is InvocationExpressionSyntax invocation)
             {
                 var methodSymbol = model.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
                 if (methodSymbol != null &&
-                    (methodSymbol.Name == "GetMethod" || methodSymbol.Name == "GetProperty" || methodSymbol.Name == "GetField") &&
+                    (methodSymbol.Name == "GetMethod" || methodSymbol.Name == "GetProperty" || methodSymbol.Name == "GetField" || methodSymbol.Name == "GetNestedType") &&
                     methodSymbol.ContainingType?.Name == "Type" &&
                     invocation.ArgumentList.Arguments.Count > 0)
                 {
                     // Check if the first argument is a string literal matching the symbol name
                     var firstArg = invocation.ArgumentList.Arguments[0].Expression;
-                    if (firstArg is LiteralExpressionSyntax literal &&
-                        literal.Kind() == SyntaxKind.StringLiteralExpression &&
-                        literal.Token.ValueText == symbol.Name)
+                    if (firstArg is LiteralExpressionSyntax lit &&
+                        lit.Kind() == SyntaxKind.StringLiteralExpression &&
+                        lit.Token.ValueText == symbol.Name)
                     {
                         return true;
+                    }
+                }
+
+                // Check for Type.GetType calls
+                if (methodSymbol != null &&
+                    methodSymbol.Name == "GetType" &&
+                    methodSymbol.ContainingType?.Name == "Type" &&
+                    invocation.ArgumentList.Arguments.Count > 0)
+                {
+                    // Check if the first argument is a string literal matching the symbol's full name
+                    var firstArg = invocation.ArgumentList.Arguments[0].Expression;
+                    if (firstArg is LiteralExpressionSyntax lit &&
+                        lit.Kind() == SyntaxKind.StringLiteralExpression)
+                    {
+                        var typeName = lit.Token.ValueText;
+                        if (symbol is INamedTypeSymbol typeSymbol)
+                        {
+                            if (typeName == typeSymbol.ToDisplayString() || typeName == typeSymbol.Name)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+
+                // Check for Assembly.GetType calls
+                if (methodSymbol != null &&
+                    methodSymbol.Name == "GetType" &&
+                    methodSymbol.ContainingType?.Name == "Assembly" &&
+                    invocation.ArgumentList.Arguments.Count > 0)
+                {
+                    // Check if the first argument is a string literal matching the symbol's full name
+                    var firstArg = invocation.ArgumentList.Arguments[0].Expression;
+                    if (firstArg is LiteralExpressionSyntax lit &&
+                        lit.Kind() == SyntaxKind.StringLiteralExpression)
+                    {
+                        var typeName = lit.Token.ValueText;
+                        if (symbol is INamedTypeSymbol typeSymbol)
+                        {
+                            if (typeName == typeSymbol.ToDisplayString() || typeName == typeSymbol.Name)
+                            {
+                                return true;
+                            }
+                        }
                     }
                 }
 
@@ -203,6 +304,54 @@ public static class SemanticSearch
                     foreach (var arg in invocation.ArgumentList.Arguments)
                     {
                         var typeInfo = model.GetTypeInfo(arg.Expression).Type;
+                        if (typeInfo != null && SymbolEqualityComparer.Default.Equals(typeInfo, symbol.ContainingType))
+                        {
+                            return true;
+                        }
+                    }
+                    // Also check for string arguments
+                    foreach (var arg in invocation.ArgumentList.Arguments)
+                    {
+                        if (arg.Expression is LiteralExpressionSyntax lit &&
+                            lit.Kind() == SyntaxKind.StringLiteralExpression)
+                        {
+                            var str = lit.Token.ValueText;
+                            if (symbol is INamedTypeSymbol typeSymbol &&
+                                (str == typeSymbol.Name || str == typeSymbol.ToDisplayString()))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+
+                // Check for Enum.Parse calls
+                if (methodSymbol != null &&
+                    methodSymbol.Name == "Parse" &&
+                    methodSymbol.ContainingType?.Name == "Enum" &&
+                    invocation.ArgumentList.Arguments.Count > 0)
+                {
+                    var firstArg = invocation.ArgumentList.Arguments[0].Expression;
+                    if (firstArg is TypeOfExpressionSyntax tof)
+                    {
+                        var typeInfo = model.GetTypeInfo(tof.Type).Type;
+                        if (typeInfo != null && SymbolEqualityComparer.Default.Equals(typeInfo, symbol.ContainingType))
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                // Check for Convert.ChangeType calls
+                if (methodSymbol != null &&
+                    methodSymbol.Name == "ChangeType" &&
+                    methodSymbol.ContainingType?.Name == "Convert" &&
+                    invocation.ArgumentList.Arguments.Count > 1)
+                {
+                    var secondArg = invocation.ArgumentList.Arguments[1].Expression;
+                    if (secondArg is TypeOfExpressionSyntax tof)
+                    {
+                        var typeInfo = model.GetTypeInfo(tof.Type).Type;
                         if (typeInfo != null && SymbolEqualityComparer.Default.Equals(typeInfo, symbol.ContainingType))
                         {
                             return true;
