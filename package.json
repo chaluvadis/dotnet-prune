@@ -15,7 +15,7 @@
     "url": "https://github.com/chaluvadis/dotnet-prune/issues"
   },
   "engines": {
-    "vscode": "^1.105.0"
+    "vscode": "^1.106.0"
   },
   "categories": [
     "Linters"
@@ -94,9 +94,9 @@
     "package": "pnpm clean && pnpm compile && pnpm dotnet:publish && vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.105.0",
+    "@types/vscode": "^1.106.0",
     "@types/mocha": "^10.0.10",
-    "@types/node": "24.10.0",
+    "@types/node": "24.10.1",
     "typescript-eslint": "^8.46.4",
     "eslint": "^9.39.1",
     "esbuild": "^0.27.0",
