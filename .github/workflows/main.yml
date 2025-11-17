@@ -57,7 +57,7 @@ jobs:
         OUT="dotnet-prune-${TAG}.vsix"
         echo "OUT=${OUT}" >> $GITHUB_ENV
         echo "Packaging VSIX -> ${OUT}"
-        npx vsce package --out "${OUT}"
+        pnpm package --out "${OUT}"
       shell: bash
 
     - name: Get VSIX name
