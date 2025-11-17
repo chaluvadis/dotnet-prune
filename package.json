@@ -2,7 +2,7 @@
   "name": "dotnet-prune-vscode",
   "displayName": "DotNetPrune",
   "description": "Visualize unused .NET code in VS Code with hierarchical tree view showing findings organized by solution, project, and files.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "nomad-in-code",
   "icon": "resources/icon.png",
   "license": "MIT",
