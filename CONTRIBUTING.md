@@ -1,6 +1,6 @@
 # Contributing to dotnet-prune
 
-Thank you for your interest in contributing to **di-navigator**! We welcome contributions from everyone, especially during Hacktoberfest. Please follow the guidelines below to participate and make your experience smooth and enjoyable.
+Thank you for your interest in contributing to **dotnet-prune**! We welcome contributions from everyone, especially during Hacktoberfest. Please follow the guidelines below to participate and make your experience smooth and enjoyable.
 
 ## How to Contribute
 
