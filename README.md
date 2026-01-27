@@ -2,9 +2,8 @@
 
 DotNetPrune analyzes candidate unused code (methods, parameters, fields, properties, types) in .NET solutions using Roslyn and displays the results in VS Code through an integrated hierarchical tree view.
 
-## Installation
-
-Install the extension from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=nomad-in-code.dotnet-prune-vscode).
+---
+![Build & Release VS Code Extension](https://github.com/chaluvadis/dotnet-prune/actions/workflows/main.yml/badge.svg)
 
 ## Features
 
