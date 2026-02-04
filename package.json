@@ -2,7 +2,7 @@
   "name": "dotnet-prune-vscode",
   "displayName": "DotNetPrune",
   "description": "Visualize unused .NET code in VS Code with hierarchical tree view showing findings organized by solution, project, and files.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "nomad-in-code",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -47,12 +47,144 @@
       {
         "command": "dotnetprune.copyProjectName",
         "title": "Copy Project Name"
+      },
+      {
+        "command": "dotnetprune.filterBySymbolKind",
+        "title": "DotNetPrune: Filter by Symbol Kind"
+      },
+      {
+        "command": "dotnetprune.filterByConfidence",
+        "title": "DotNetPrune: Filter by Confidence"
+      },
+      {
+        "command": "dotnetprune.filterByProject",
+        "title": "DotNetPrune: Filter by Project"
+      },
+      {
+        "command": "dotnetprune.searchFindings",
+        "title": "DotNetPrune: Search Findings"
+      },
+      {
+        "command": "dotnetprune.clearFilters",
+        "title": "DotNetPrune: Clear All Filters"
+      },
+      {
+        "command": "dotnetprune.bulkIgnore",
+        "title": "DotNetPrune: Bulk Ignore Selected"
+      },
+      {
+        "command": "dotnetprune.bulkDelete",
+        "title": "DotNetPrune: Bulk Delete Selected"
+      },
+      {
+        "command": "dotnetprune.exportFindings",
+        "title": "DotNetPrune: Export Findings"
+      },
+      {
+        "command": "dotnetprune.ignoreFinding",
+        "title": "Ignore This Finding"
+      },
+      {
+        "command": "dotnetprune.deleteFinding",
+        "title": "Delete Unused Code"
       }
     ],
     "configuration": {
       "type": "object",
       "title": "DotNetPrune",
-      "properties": {}
+      "properties": {
+        "dotnetprune.analysis.includePublicSymbols": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include public symbols in the analysis"
+        },
+        "dotnetprune.analysis.includeInternalSymbols": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include internal symbols in the analysis"
+        },
+        "dotnetprune.analysis.excludeGeneratedCode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Exclude auto-generated code from analysis"
+        },
+        "dotnetprune.analysis.mode": {
+          "type": "string",
+          "enum": ["strict", "loose"],
+          "default": "loose",
+          "description": "Analysis mode: strict (fewer false positives) or loose (more comprehensive)"
+        },
+        "dotnetprune.analysis.detectDeadCode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Detect dead/unreachable code (experimental)"
+        },
+        "dotnetprune.analysis.detectTodoComments": {
+          "type": "boolean",
+          "default": false,
+          "description": "Detect TODO/HACK/FIXME comments"
+        },
+        "dotnetprune.filter.exclusionPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["**/bin/**", "**/obj/**", "**/node_modules/**"],
+          "description": "Glob patterns to exclude from analysis"
+        },
+        "dotnetprune.filter.inclusionPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["**/*.cs", "**/*.sln", "**/*.csproj"],
+          "description": "Glob patterns to include in analysis"
+        },
+        "dotnetprune.filter.symbolKinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["Method", "Property", "Field", "Parameter", "Type", "Class", "Interface", "Struct", "Enum"]
+          },
+          "default": ["Method", "Property", "Field", "Parameter", "Type"],
+          "description": "Symbol kinds to analyze"
+        },
+        "dotnetprune.ui.enableInlineHighlighting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Highlight unused code inline in the editor"
+        },
+        "dotnetprune.ui.showConfidence": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show confidence levels in findings"
+        },
+        "dotnetprune.ui.showSeverity": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show severity levels in findings"
+        },
+        "dotnetprune.performance.enableCaching": {
+          "type": "boolean",
+          "default": true,
+          "description": "Cache analysis results to improve performance"
+        },
+        "dotnetprune.performance.parallelAnalysis": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable parallel analysis of projects"
+        },
+        "dotnetprune.integration.enableProblemsPanel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show findings in VS Code Problems panel"
+        },
+        "dotnetprune.integration.enableCodeActions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Quick Fix code actions for unused code"
+        }
+      }
     },
     "viewsContainers": {
       "activitybar": [
@@ -73,6 +205,43 @@
       ]
     },
     "menus": {
+      "view/title": [
+        {
+          "command": "dotnetprune.runAnalysis",
+          "when": "view == dotnetprune-findings",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dotnetprune.searchFindings",
+          "when": "view == dotnetprune-findings",
+          "group": "navigation@2"
+        },
+        {
+          "command": "dotnetprune.exportFindings",
+          "when": "view == dotnetprune-findings",
+          "group": "navigation@3"
+        },
+        {
+          "command": "dotnetprune.clearFilters",
+          "when": "view == dotnetprune-findings",
+          "group": "1_filters@1"
+        },
+        {
+          "command": "dotnetprune.filterBySymbolKind",
+          "when": "view == dotnetprune-findings",
+          "group": "1_filters@2"
+        },
+        {
+          "command": "dotnetprune.filterByConfidence",
+          "when": "view == dotnetprune-findings",
+          "group": "1_filters@3"
+        },
+        {
+          "command": "dotnetprune.filterByProject",
+          "when": "view == dotnetprune-findings",
+          "group": "1_filters@4"
+        }
+      ],
       "view/item/context": [
         {
           "command": "dotnetprune.copyFilePath",
@@ -83,6 +252,16 @@
           "command": "dotnetprune.copyProjectName",
           "when": "view == dotnetprune-findings && viewItem == project",
           "group": "7_modification@1"
+        },
+        {
+          "command": "dotnetprune.ignoreFinding",
+          "when": "view == dotnetprune-findings && viewItem == finding",
+          "group": "2_workspace@1"
+        },
+        {
+          "command": "dotnetprune.deleteFinding",
+          "when": "view == dotnetprune-findings && viewItem == finding",
+          "group": "2_workspace@2"
         }
       ]
     }
