@@ -51,11 +51,23 @@ export function activate(context: vscode.ExtensionContext) {
     }
   );
 
+  // Auto-refresh on save when enabled in settings
+  const onSaveListener = vscode.workspace.onDidSaveTextDocument((doc) => {
+    const cfg = getConfig();
+    if (
+      cfg.autoRefreshOnSave &&
+      (doc.languageId === "csharp" || doc.fileName.endsWith(".cs"))
+    ) {
+      provider.refresh();
+    }
+  });
+
   context.subscriptions.push(
     treeView,
     diagnosticProvider,
     codeActionsRegistration,
     decorator,
+    onSaveListener,
     vscode.commands.registerCommand("dotnetprune.refresh", () =>
       provider.refresh()
     ),
@@ -77,8 +89,9 @@ export function activate(context: vscode.ExtensionContext) {
       async (item: FileTreeItem) => {
         if (!item || !item.filePath) return;
         await vscode.env.clipboard.writeText(item.filePath);
-        vscode.window.showInformationMessage(
-          `DotNetPrune: ${item.filePath} path copied to clipboard`
+        vscode.window.setStatusBarMessage(
+          `DotNetPrune: ${item.filePath} path copied to clipboard`,
+          3000
         );
       }
     ),
@@ -87,8 +100,9 @@ export function activate(context: vscode.ExtensionContext) {
       async (item: ProjectTreeItem) => {
         if (!item || !item.label) return;
         await vscode.env.clipboard.writeText(item.label);
-        vscode.window.showInformationMessage(
-          `DotNetPrune: ${item.label} name copied to clipboard`
+        vscode.window.setStatusBarMessage(
+          `DotNetPrune: ${item.label} name copied to clipboard`,
+          3000
         );
       }
     ),
@@ -239,6 +253,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   private diagnosticProvider?: DiagnosticProvider;
   private codeActionsProvider?: CodeActionsProvider;
   private decorator?: InlineDecorator;
+  private isAnalysisRunning = false; // Run-lock to prevent overlapping analysis
 
   constructor(private context: vscode.ExtensionContext) {
     // Load ignored findings from workspace state
@@ -289,6 +304,22 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   async runAnalysisAndRefresh(silent: boolean = false): Promise<void> {
+    // Workspace trust guard
+    if (!vscode.workspace.isTrusted) {
+      vscode.window.showWarningMessage(
+        "DotNetPrune: Analysis requires a trusted workspace. Please trust this workspace to proceed."
+      );
+      return;
+    }
+
+    // Run-lock: prevent overlapping analysis runs
+    if (this.isAnalysisRunning) {
+      vscode.window.showWarningMessage(
+        "DotNetPrune: Analysis is already in progress. Please wait for it to complete."
+      );
+      return;
+    }
+
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
       vscode.window.showErrorMessage(
@@ -351,123 +382,177 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
     const dllPath = this.getDllPath();
     if (!dllPath || !fs.existsSync(dllPath)) {
+      this.appendToOutput("Analyzer DLL not found at: " + dllPath, "error");
       vscode.window.showErrorMessage(
-        "DotNetPrune: Analyzer not found. Please ensure the extension is properly installed."
-      );
+        "DotNetPrune: Analyzer not found. Please ensure the extension is properly installed.",
+        "Open Output"
+      ).then((choice) => {
+        if (choice === "Open Output") {
+          outputChannel?.show(true);
+        }
+      });
       return;
     }
 
-    // Use spawn for better security and control
-    const run = await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: "DotNetPrune:",
-        cancellable: true,
-      },
-      async (progress, token) => {
-        progress.report({ message: "Executing DotNet Prune analyzer..." });
+    this.isAnalysisRunning = true;
+    try {
+      // Use spawn for better security and control
+      const run = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "DotNetPrune:",
+          cancellable: true,
+        },
+        async (progress, token) => {
+          progress.report({ message: "Executing DotNet Prune analyzer..." });
 
-        return new Promise<boolean>((resolve) => {
-          const child = spawn("dotnet", [dllPath, chosenPath], {
-            cwd: getWorkspaceRootPath(),
-            stdio: ["ignore", "pipe", "pipe"],
-            timeout: 300000, // 5 minute timeout
-          });
+          return new Promise<boolean>((resolve) => {
+            const child = spawn("dotnet", [dllPath, chosenPath], {
+              cwd: getWorkspaceRootPath(),
+              stdio: ["ignore", "pipe", "pipe"],
+              timeout: 300000, // 5 minute timeout
+            });
 
-          let stdout = "";
-          let stderr = "";
+            let stdout = "";
+            let stderr = "";
 
-          // Handle cancellation
-          token.onCancellationRequested(() => {
-            child.kill();
-            resolve(false);
-          });
+            // Handle cancellation
+            token.onCancellationRequested(() => {
+              child.kill();
+              resolve(false);
+            });
 
-          child.stdout.on("data", (data: Buffer) => {
-            stdout += data.toString();
-          });
+            child.stdout.on("data", (data: Buffer) => {
+              stdout += data.toString();
+            });
 
-          child.stderr.on("data", (data: Buffer) => {
-            stderr += data.toString();
-          });
+            child.stderr.on("data", (data: Buffer) => {
+              stderr += data.toString();
+            });
 
-          child.on("close", async (code: number) => {
-            try {
-              // Check exit code - code 1 means findings detected (success), other codes are errors
-              if (code !== 0 && code !== 1) {
-                throw new Error(`Analyzer exited with code ${code}`);
-              }
-
-              // Log stderr if present
-              if (stderr && stderr.trim().length > 0) {
-                this.appendToOutput(stderr);
-              }
-
-              // Parse JSON from stdout - expect clean JSON array
-              const trimmedStdout = stdout.trim();
-              if (!trimmedStdout) {
-                if (stderr && stderr.trim().length > 0) {
-                  throw new Error(`Analyzer failed: ${stderr.trim()}`);
-                } else {
-                  throw new Error("No output received from analyzer");
-                }
-              }
-
-              // Try to parse as JSON directly
-              let findings: any[];
+            child.on("close", async (code: number) => {
               try {
-                findings = JSON.parse(trimmedStdout);
-              } catch (parseError) {
-                // Fallback: try to extract JSON array if wrapped in other text
-                const jsonMatch = trimmedStdout.match(/(\[[\s\S]*\])/);
-                if (!jsonMatch) {
+                // Check exit code - code 1 means findings detected (success), other codes are errors
+                if (code !== 0 && code !== 1) {
+                  const details = stderr.trim() || `Exit code: ${code}`;
+                  this.appendToOutput(`Analyzer stderr: ${details}`, "warn");
                   throw new Error(
-                    `Invalid JSON output from analyzer: ${parseError}`
+                    `Analyzer exited with code ${code}. See Output panel for details.`
                   );
                 }
-                findings = JSON.parse(jsonMatch[1]);
-              }
 
-              // Validate findings structure
-              if (!Array.isArray(findings)) {
-                throw new Error(
-                  "Analyzer output is not a valid findings array"
-                );
-              }
+                // Log stderr if present
+                if (stderr && stderr.trim().length > 0) {
+                  this.appendToOutput(stderr, "warn");
+                }
 
-              await this.loadFindingsFromJson(findings);
-              resolve(true);
-            } catch (error: any) {
-              const errorMsg = `Failed to parse analyzer output: ${error.message}`;
-              vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`);
-              this.appendToOutput(errorMsg);
-              this.appendToOutput(`Raw stdout: ${stdout.substring(0, 1000)}`);
+                // Parse JSON from stdout - expect clean JSON array
+                const trimmedStdout = stdout.trim();
+                if (!trimmedStdout) {
+                  if (stderr && stderr.trim().length > 0) {
+                    throw new Error(
+                      "Analyzer produced no output. See Output panel for stderr details."
+                    );
+                  } else {
+                    throw new Error(
+                      "Analyzer produced no output. Ensure a valid .sln or .csproj was selected."
+                    );
+                  }
+                }
+
+                // Try to parse as JSON directly
+                let findings: any[];
+                try {
+                  findings = JSON.parse(trimmedStdout);
+                } catch (parseError) {
+                  // Fallback: try to extract JSON array if wrapped in other text
+                  const jsonMatch = trimmedStdout.match(/(\[[\s\S]*\])/);
+                  if (!jsonMatch) {
+                    this.appendToOutput(`Raw stdout: ${stdout.substring(0, 2000)}`, "debug");
+                    throw new Error(
+                      "Invalid output from analyzer. Expected JSON array. See Output panel for details."
+                    );
+                  }
+                  findings = JSON.parse(jsonMatch[1]);
+                }
+
+                // Validate findings structure
+                if (!Array.isArray(findings)) {
+                  this.appendToOutput(`Raw stdout: ${stdout.substring(0, 2000)}`, "debug");
+                  throw new Error(
+                    "Analyzer output is not a valid findings array. See Output panel for details."
+                  );
+                }
+
+                // Apply maxFindings limit from settings
+                const cfg = getConfig();
+                const limited = findings.slice(0, cfg.maxFindings);
+                if (findings.length > cfg.maxFindings) {
+                  this.appendToOutput(
+                    `Warning: ${findings.length} findings found; displaying first ${cfg.maxFindings} (dotnetprune.maxFindings).`,
+                    "warn"
+                  );
+                }
+
+                await this.loadFindingsFromJson(limited);
+                resolve(true);
+              } catch (error: any) {
+                this.appendToOutput(error.message, "error");
+                vscode.window.showErrorMessage(
+                  `DotNetPrune: ${error.message}`,
+                  "Open Output"
+                ).then((choice) => {
+                  if (choice === "Open Output") {
+                    outputChannel?.show(true);
+                  }
+                });
+                resolve(false);
+              }
+            });
+
+            child.on("error", (error: NodeJS.ErrnoException) => {
+              let userMessage: string;
+              if (error.code === "ENOENT") {
+                userMessage =
+                  ".NET runtime not found. Install the .NET SDK (https://dot.net) and ensure 'dotnet' is on your PATH.";
+              } else if (error.code === "ETIMEDOUT") {
+                userMessage =
+                  "Analysis timed out. Try running on a smaller project or increasing the timeout.";
+              } else {
+                userMessage = `Failed to start analyzer: ${error.message}`;
+              }
+              this.appendToOutput(`Spawn error: ${error.message} (code: ${error.code})`, "error");
+              this.appendToOutput(userMessage, "error");
+              vscode.window.showErrorMessage(`DotNetPrune: ${userMessage}`, "Open Output").then((choice) => {
+                if (choice === "Open Output") {
+                  outputChannel?.show(true);
+                }
+              });
               resolve(false);
-            }
+            });
           });
+        }
+      );
 
-          child.on("error", (error: Error) => {
-            const errorMsg = `Failed to execute analyzer: ${error.message}`;
-            vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`);
-            this.appendToOutput(errorMsg);
-            resolve(false);
-          });
-        });
-      }
-    );
+      if (!run) return;
 
-    if (!run) return;
+      this._onDidChangeTreeData.fire(undefined);
+      vscode.window.showInformationMessage(
+        "DotNetPrune: Analysis completed."
+      );
 
-    this._onDidChangeTreeData.fire(undefined);
-    vscode.window.showInformationMessage(
-      "DotNetPrune: Analysis completed."
-    );
-
-    // Open the DotNetPrune view to show the findings
-    vscode.commands.executeCommand("workbench.view.dotnetprune-views");
+      // Open the DotNetPrune view to show the findings
+      vscode.commands.executeCommand("workbench.view.dotnetprune-views");
+    } finally {
+      this.isAnalysisRunning = false;
+    }
   }
 
   private getDllPath(): string {
+    const cfg = getConfig();
+    if (cfg.analyzerPath && cfg.analyzerPath.trim().length > 0) {
+      return cfg.analyzerPath.trim();
+    }
     const extensionPath = this.context.extensionPath;
     return path.join(extensionPath, "dist", "FindUnused", "FindUnused.dll");
   }
@@ -746,7 +831,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         }
       }
     } catch (error) {
-      this.appendToOutput(`Warning: Could not discover standalone projects: ${error}`);
+      this.appendToOutput(`Warning: Could not discover standalone projects: ${error}`, "warn");
     }
   }
 
@@ -788,10 +873,10 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         }
       }
 
-      this.appendToOutput(`Discovered ${csprojFiles.length} projects for solution ${solutionName}`);
+      this.appendToOutput(`Discovered ${csprojFiles.length} projects for solution ${solutionName}`, "debug");
     } catch (error) {
       // Ignore errors in project discovery
-      this.appendToOutput(`Warning: Could not discover projects for solution ${solutionName}: ${error}`);
+      this.appendToOutput(`Warning: Could not discover projects for solution ${solutionName}: ${error}`, "warn");
     }
   }
 
@@ -1175,12 +1260,31 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     return `${finding.FilePath}:${finding.Line}:${finding.SymbolKind}:${finding.SymbolName}`;
   }
 
-  private appendToOutput(text: string) {
+private static readonly LOG_LEVELS: Record<string, number> = {
+    off: 0,
+    error: 1,
+    warn: 2,
+    info: 3,
+    debug: 4,
+  };
+
+  private appendToOutput(text: string, level: "error" | "warn" | "info" | "debug" = "info") {
+    const cfg = getConfig();
+    const configuredLevel = UnusedTreeProvider.LOG_LEVELS[cfg.logLevel] ?? UnusedTreeProvider.LOG_LEVELS.info;
+    const messageLevel = UnusedTreeProvider.LOG_LEVELS[level];
+
+    if (configuredLevel === 0 || messageLevel > configuredLevel) {
+      return;
+    }
+
     if (!outputChannel) {
       outputChannel = vscode.window.createOutputChannel("DotNetPrune");
     }
-    outputChannel.appendLine(text);
-    outputChannel.show(true);
+    outputChannel.appendLine(`[${level.toUpperCase()}] ${text}`);
+    // Only auto-show the output channel for errors/warnings
+    if (level === "error" || level === "warn") {
+      outputChannel.show(true);
+    }
   }
 
   getTreeItem(element: TreeItemBase): vscode.TreeItem {

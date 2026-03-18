@@ -20,7 +20,13 @@
   "categories": [
     "Linters"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:dotnetprune-findings",
+    "onCommand:dotnetprune.runAnalysis",
+    "onCommand:dotnetprune.refresh",
+    "onCommand:dotnetprune.clearFindings",
+    "onCommand:dotnetprune.exportFindings"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -183,6 +189,36 @@
           "type": "boolean",
           "default": true,
           "description": "Enable Quick Fix code actions for unused code"
+        },
+        "dotnetprune.autoRefreshOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically re-run analysis when a C# file is saved"
+        },
+        "dotnetprune.maxFindings": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 1,
+          "description": "Maximum number of findings to display"
+        },
+        "dotnetprune.excludeGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional glob patterns to exclude from analysis"
+        },
+        "dotnetprune.analyzerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to the FindUnused analyzer DLL. Leave empty to use the bundled analyzer."
+        },
+        "dotnetprune.logLevel": {
+          "type": "string",
+          "enum": ["off", "error", "warn", "info", "debug"],
+          "default": "info",
+          "description": "Log verbosity level for the DotNetPrune output channel"
         }
       }
     },
@@ -268,7 +304,7 @@
   },
   "scripts": {
     "compile": "node esbuild.js",
-    "clean": "rm -rf dotnet-prune-vscode-0.0.1.vsix",
+    "clean": "rm -rf *.vsix dist",
     "dotnet:publish": "dotnet publish ./FindUnused/FindUnused.csproj --output ./dist/FindUnused/",
     "package": "pnpm clean && pnpm compile && pnpm dotnet:publish && vsce package"
   },

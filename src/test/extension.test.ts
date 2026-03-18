@@ -27,6 +27,15 @@ suite('DotNetPrune Extension Test Suite', () => {
 			assert.strictEqual(config.ui.showConfidence, true);
 			assert.strictEqual(config.ui.showSeverity, true);
 		});
+
+		test('Should have correct new setting defaults', () => {
+			const config = getConfig();
+			assert.strictEqual(config.autoRefreshOnSave, false);
+			assert.strictEqual(config.maxFindings, 1000);
+			assert.deepStrictEqual(config.excludeGlobs, []);
+			assert.strictEqual(config.analyzerPath, '');
+			assert.strictEqual(config.logLevel, 'info');
+		});
 	});
 
 	suite('Filter Tests', () => {

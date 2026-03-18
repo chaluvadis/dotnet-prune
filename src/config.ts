@@ -27,6 +27,11 @@ export interface DotNetPruneConfig {
     enableProblemsPanel: boolean;
     enableCodeActions: boolean;
   };
+  autoRefreshOnSave: boolean;
+  maxFindings: number;
+  excludeGlobs: string[];
+  analyzerPath: string;
+  logLevel: "off" | "error" | "warn" | "info" | "debug";
 }
 
 export function getConfig(): DotNetPruneConfig {
@@ -73,5 +78,10 @@ export function getConfig(): DotNetPruneConfig {
       enableProblemsPanel: config.get("integration.enableProblemsPanel", true),
       enableCodeActions: config.get("integration.enableCodeActions", true),
     },
+    autoRefreshOnSave: config.get("autoRefreshOnSave", false),
+    maxFindings: config.get("maxFindings", 1000),
+    excludeGlobs: config.get("excludeGlobs", []),
+    analyzerPath: config.get("analyzerPath", ""),
+    logLevel: config.get("logLevel", "info"),
   };
 }
