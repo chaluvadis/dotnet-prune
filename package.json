@@ -25,7 +25,17 @@
     "onCommand:dotnetprune.runAnalysis",
     "onCommand:dotnetprune.refresh",
     "onCommand:dotnetprune.clearFindings",
-    "onCommand:dotnetprune.exportFindings"
+    "onCommand:dotnetprune.exportFindings",
+    "onCommand:dotnetprune.filterBySymbolKind",
+    "onCommand:dotnetprune.filterByConfidence",
+    "onCommand:dotnetprune.filterByProject",
+    "onCommand:dotnetprune.searchFindings",
+    "onCommand:dotnetprune.clearFilters",
+    "onCommand:dotnetprune.bulkIgnore",
+    "onCommand:dotnetprune.bulkDelete",
+    "onCommand:dotnetprune.ignoreFinding",
+    "onCommand:dotnetprune.deleteFinding",
+    "onCommand:dotnetprune.showFindingDetails"
   ],
   "main": "./dist/extension.js",
   "contributes": {

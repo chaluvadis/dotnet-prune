@@ -47,7 +47,7 @@ dotnet-prune/
 
 ### Prerequisites
 
-- Node.js 16+ and npm
+- Node.js 18+ and [pnpm](https://pnpm.io/)
 - .NET 10.0 SDK
 - VS Code
 
@@ -55,12 +55,12 @@ dotnet-prune/
 
 1. **Install dependencies**
    ```bash
-   npm install
+   pnpm install
    ```
 
 2. **Compile TypeScript**
    ```bash
-   npm run compile
+   pnpm run compile
    ```
 
 3. **Build C# analyzer**
@@ -70,7 +70,7 @@ dotnet-prune/
 
 4. **Package extension**
    ```bash
-   npm run package
+   pnpm run package
    ```
 
 This creates a `.vsix` file you can install in VS Code.
@@ -98,7 +98,7 @@ Attach the .NET debugger to the process.
 ### Testing Changes
 
 1. Make code changes
-2. Rebuild: `npm run compile` and/or `dotnet build`
+2. Rebuild: `pnpm run compile` and/or `dotnet build`
 3. Reload the Extension Development Host (Ctrl+R)
 4. Test your changes
 
@@ -259,7 +259,7 @@ The extension includes a basic test structure in `src/test/`.
 To add tests:
 1. Create test files in `src/test/`
 2. Use VS Code's test framework
-3. Run tests with `npm test`
+3. Run tests with `pnpm test`
 
 ## Code Style
 
@@ -348,7 +348,7 @@ To add tests:
 
 1. Update version in `package.json`
 2. Update CHANGELOG.md
-3. Build and test: `npm run package`
+3. Build and test: `pnpm run package`
 4. Create GitHub release
 5. Publish to VS Code Marketplace
 
