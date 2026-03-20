@@ -112,33 +112,33 @@
         "dotnetprune.analysis.includePublicSymbols": {
           "type": "boolean",
           "default": true,
-          "description": "Include public symbols in the analysis"
+          "description": "Include public symbols in the analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.includeInternalSymbols": {
           "type": "boolean",
           "default": true,
-          "description": "Include internal symbols in the analysis"
+          "description": "Include internal symbols in the analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.excludeGeneratedCode": {
           "type": "boolean",
           "default": true,
-          "description": "Exclude auto-generated code from analysis"
+          "description": "Exclude auto-generated code from analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.mode": {
           "type": "string",
           "enum": ["strict", "loose"],
           "default": "loose",
-          "description": "Analysis mode: strict (fewer false positives) or loose (more comprehensive)"
+          "description": "Analysis mode: strict (fewer false positives) or loose (more comprehensive). (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.detectDeadCode": {
           "type": "boolean",
           "default": false,
-          "description": "Detect dead/unreachable code (experimental)"
+          "description": "Detect dead/unreachable code (experimental). (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.detectTodoComments": {
           "type": "boolean",
           "default": false,
-          "description": "Detect TODO/HACK/FIXME comments"
+          "description": "Detect TODO/HACK/FIXME comments. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.filter.exclusionPatterns": {
           "type": "array",
@@ -146,7 +146,7 @@
             "type": "string"
           },
           "default": ["**/bin/**", "**/obj/**", "**/node_modules/**"],
-          "description": "Glob patterns to exclude from analysis"
+          "description": "Glob patterns to exclude from analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.filter.inclusionPatterns": {
           "type": "array",
@@ -154,7 +154,7 @@
             "type": "string"
           },
           "default": ["**/*.cs", "**/*.sln", "**/*.csproj"],
-          "description": "Glob patterns to include in analysis"
+          "description": "Glob patterns to include in analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.filter.symbolKinds": {
           "type": "array",
@@ -163,7 +163,7 @@
             "enum": ["Method", "Property", "Field", "Parameter", "Type", "Class", "Interface", "Struct", "Enum"]
           },
           "default": ["Method", "Property", "Field", "Parameter", "Type"],
-          "description": "Symbol kinds to analyze"
+          "description": "Symbol kinds to analyze. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.ui.enableInlineHighlighting": {
           "type": "boolean",
@@ -183,12 +183,12 @@
         "dotnetprune.performance.enableCaching": {
           "type": "boolean",
           "default": true,
-          "description": "Cache analysis results to improve performance"
+          "description": "Cache analysis results to improve performance. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.performance.parallelAnalysis": {
           "type": "boolean",
           "default": true,
-          "description": "Enable parallel analysis of projects"
+          "description": "Enable parallel analysis of projects. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.integration.enableProblemsPanel": {
           "type": "boolean",
@@ -217,7 +217,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Additional glob patterns to exclude from analysis"
+          "description": "Additional glob patterns to exclude from analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analyzerPath": {
           "type": "string",
