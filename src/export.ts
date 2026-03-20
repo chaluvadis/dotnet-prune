@@ -200,7 +200,7 @@ export class FindingsExporter {
     </tr>\n`;
 
       for (const f of projectFindings) {
-        const accessibilityClass = `badge badge-${f.Accessibility.toLowerCase()}`;
+        const accessibilityClass = `badge badge-${f.Accessibility.toLowerCase().replace(/\s+/g, "-")}`;
         html += `    <tr>
       <td>${this.escapeHtml(f.DisplayName || f.FilePathDisplay)}</td>
       <td>${f.Line}</td>
@@ -208,7 +208,7 @@ export class FindingsExporter {
       <td>${this.escapeHtml(f.SymbolName)}</td>
       <td>${this.escapeHtml(f.ContainingType)}</td>
       <td><span class="${accessibilityClass}">${this.escapeHtml(f.Accessibility)}</span></td>
-      <td>${f.confidence || "N/A"}</td>
+      <td>${f.confidence !== undefined && f.confidence !== null ? f.confidence : "N/A"}</td>
     </tr>\n`;
       }
 

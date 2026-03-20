@@ -1127,8 +1127,13 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       }
     }
     
-    if (this.codeActionsProvider && config.integration.enableCodeActions) {
-      this.codeActionsProvider.updateFindings(this.findings);
+    if (this.codeActionsProvider) {
+      if (config.integration.enableCodeActions) {
+        this.codeActionsProvider.updateFindings(this.findings);
+      } else {
+        // Clear any previously loaded findings so code actions do not use stale data
+        this.codeActionsProvider.updateFindings([]);
+      }
     }
     
     if (this.decorator) {
