@@ -1,3 +1,5 @@
+import type { Finding } from "./diagnostics";
+
 export interface FilterState {
   symbolKinds: Set<string>;
   projects: Set<string>;
@@ -38,7 +40,7 @@ export class FindingFilter {
     };
   }
 
-  matches(finding: any): boolean {
+  matches(finding: Finding): boolean {
     // Symbol kind filter
     if (
       this.state.symbolKinds.size > 0 &&
@@ -55,22 +57,22 @@ export class FindingFilter {
       return false;
     }
 
-    // Confidence filter
-    if (
-      finding.confidence !== undefined &&
-      finding.confidence < this.state.minConfidence
-    ) {
-      return false;
+    // Confidence filter: treat missing confidence as 0 so the filter is effective
+    if (this.state.minConfidence > 0) {
+      const confidence = finding.confidence ?? 0;
+      if (confidence < this.state.minConfidence) {
+        return false;
+      }
     }
 
     // Search text filter
     if (this.state.searchText) {
       const searchableText = [
-        finding.SymbolName,
-        finding.ContainingType,
-        finding.Project,
-        finding.FilePath,
-        finding.Remarks,
+        finding.SymbolName ?? "",
+        finding.ContainingType ?? "",
+        finding.Project ?? "",
+        finding.FilePath ?? "",
+        finding.Remarks ?? "",
       ]
         .join(" ")
         .toLowerCase();
@@ -93,6 +95,10 @@ export class FindingFilter {
   }
 
   getState(): FilterState {
-    return { ...this.state };
+    return {
+      ...this.state,
+      symbolKinds: new Set(this.state.symbolKinds),
+      projects: new Set(this.state.projects),
+    };
   }
 }

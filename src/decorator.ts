@@ -5,6 +5,7 @@ export class InlineDecorator {
   private decorationType: vscode.TextEditorDecorationType;
   private findings: Finding[] = [];
   private disposables: vscode.Disposable[] = [];
+  private debounceHandle: ReturnType<typeof setTimeout> | undefined;
 
   constructor() {
     // Create decoration type for unused code
@@ -34,8 +35,14 @@ export class InlineDecorator {
       vscode.workspace.onDidChangeTextDocument((event) => {
         const editor = vscode.window.activeTextEditor;
         if (editor && event.document === editor.document) {
-          // Debounce decoration updates
-          setTimeout(() => this.updateDecorations(editor), 500);
+          // Debounce decoration updates — cancel any pending update first
+          if (this.debounceHandle !== undefined) {
+            clearTimeout(this.debounceHandle);
+          }
+          this.debounceHandle = setTimeout(() => {
+            this.debounceHandle = undefined;
+            this.updateDecorations(editor);
+          }, 500);
         }
       })
     );
@@ -83,19 +90,31 @@ export class InlineDecorator {
 
   private createHoverMessage(finding: Finding): vscode.MarkdownString {
     const md = new vscode.MarkdownString();
-    md.isTrusted = true;
+    // Restrict trust to only the two commands we embed as links
+    md.isTrusted = {
+      enabledCommands: [
+        "dotnetprune.deleteFindingByLocation",
+        "dotnetprune.ignoreFindingByLocation",
+      ],
+    };
 
     md.appendMarkdown(`### ⚠ Unused ${finding.SymbolKind}\n\n`);
-    md.appendMarkdown(`**Symbol:** \`${finding.SymbolName}\`\n\n`);
-    md.appendMarkdown(`**Type:** \`${finding.ContainingType}\`\n\n`);
-    md.appendMarkdown(`**Accessibility:** ${finding.Accessibility}\n\n`);
+    md.appendMarkdown("**Symbol:** ");
+    md.appendText(finding.SymbolName);
+    md.appendMarkdown("\n\n**Type:** ");
+    md.appendText(finding.ContainingType);
+    md.appendMarkdown("\n\n**Accessibility:** ");
+    md.appendText(finding.Accessibility);
+    md.appendMarkdown("\n\n");
 
     if (finding.confidence !== undefined) {
       md.appendMarkdown(`**Confidence:** ${finding.confidence}%\n\n`);
     }
 
     if (finding.Remarks) {
-      md.appendMarkdown(`**Details:** ${finding.Remarks}\n\n`);
+      md.appendMarkdown("**Details:** ");
+      md.appendText(finding.Remarks);
+      md.appendMarkdown("\n\n");
     }
 
     md.appendMarkdown(`---\n\n`);

@@ -105,6 +105,15 @@ export class FindingsExporter {
     return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
   }
 
+  private escapeMarkdownCell(value: string | undefined): string {
+    if (!value) return "";
+    // Escape backslashes first, then pipes, then strip newlines
+    return value
+      .replace(/\\/g, "\\\\")
+      .replace(/\|/g, "\\|")
+      .replace(/[\r\n]+/g, " ");
+  }
+
   private exportAsMarkdown(findings: Finding[]): string {
     let md = "# DotNetPrune Analysis Report\n\n";
     md += `Generated: ${new Date().toISOString()}\n\n`;
@@ -127,7 +136,8 @@ export class FindingsExporter {
       md += "|------|------|------|--------|------|---------------|\n";
 
       for (const f of projectFindings) {
-        md += `| ${f.DisplayName || f.FilePathDisplay} | ${f.Line} | ${f.SymbolKind} | ${f.SymbolName} | ${f.ContainingType} | ${f.Accessibility} |\n`;
+        const cell = (v: string | undefined) => this.escapeMarkdownCell(v);
+        md += `| ${cell(f.DisplayName || f.FilePathDisplay)} | ${f.Line} | ${cell(f.SymbolKind)} | ${cell(f.SymbolName)} | ${cell(f.ContainingType)} | ${cell(f.Accessibility)} |\n`;
       }
 
       md += "\n";

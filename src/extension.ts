@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { getConfig } from "./config";
 import { FindingFilter } from "./filter";
-import { DiagnosticProvider, type Finding as DiagnosticFinding } from "./diagnostics";
+import { DiagnosticProvider } from "./diagnostics";
 import { CodeActionsProvider } from "./codeActions";
 import { FindingsExporter } from "./export";
 import { InlineDecorator } from "./decorator";
@@ -415,9 +415,11 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
             let stdout = "";
             let stderr = "";
+            let cancelled = false;
 
             // Handle cancellation
             token.onCancellationRequested(() => {
+              cancelled = true;
               child.kill();
               resolve(false);
             });
@@ -431,6 +433,8 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
             });
 
             child.on("close", async (code: number) => {
+              // No-op after cancellation to avoid double-resolve and spurious errors
+              if (cancelled) return;
               try {
                 // Check exit code - code 1 means findings detected (success), other codes are errors
                 if (code !== 0 && code !== 1) {
@@ -511,6 +515,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
             });
 
             child.on("error", (error: NodeJS.ErrnoException) => {
+              if (cancelled) return;
               let userMessage: string;
               if (error.code === "ENOENT") {
                 userMessage =
@@ -1114,16 +1119,24 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   private updateIntegrations(): void {
     const config = getConfig();
     
-    if (config.integration.enableProblemsPanel && this.diagnosticProvider) {
-      this.diagnosticProvider.updateDiagnostics(this.findings);
+    if (this.diagnosticProvider) {
+      if (config.integration.enableProblemsPanel) {
+        this.diagnosticProvider.updateDiagnostics(this.findings);
+      } else {
+        this.diagnosticProvider.clear();
+      }
     }
     
-    if (this.codeActionsProvider) {
+    if (this.codeActionsProvider && config.integration.enableCodeActions) {
       this.codeActionsProvider.updateFindings(this.findings);
     }
     
-    if (config.ui.enableInlineHighlighting && this.decorator) {
-      this.decorator.updateFindings(this.findings);
+    if (this.decorator) {
+      if (config.ui.enableInlineHighlighting) {
+        this.decorator.updateFindings(this.findings);
+      } else {
+        this.decorator.clear();
+      }
     }
   }
 
@@ -1155,11 +1168,10 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
     try {
       const doc = await vscode.workspace.openTextDocument(finding.FilePath);
-      const editor = await vscode.window.showTextDocument(doc);
+      await vscode.window.showTextDocument(doc);
       
       // Find the symbol declaration and delete it
       const line = Math.max(0, finding.Line - 1);
-      const lineText = doc.lineAt(line).text;
       
       // Simple deletion: delete the entire line
       // In a real implementation, you'd want more sophisticated code parsing
@@ -1193,7 +1205,18 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     panel.webview.html = this.getFindingDetailsHtml(finding);
   }
 
+  private escapeHtml(value: string): string {
+    if (!value) return "";
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   private getFindingDetailsHtml(finding: Finding): string {
+    const esc = (v: string | undefined) => this.escapeHtml(v ?? "");
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -1207,14 +1230,14 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   </style>
 </head>
 <body>
-  <h1>${finding.SymbolKind}: ${finding.SymbolName}</h1>
+  <h1>${esc(finding.SymbolKind)}: ${esc(finding.SymbolName)}</h1>
   <div class="detail">
     <span class="label">Type:</span>
-    <span class="value">${finding.ContainingType}</span>
+    <span class="value">${esc(finding.ContainingType)}</span>
   </div>
   <div class="detail">
     <span class="label">File:</span>
-    <span class="value">${finding.FilePathDisplay || finding.FilePath}</span>
+    <span class="value">${esc(finding.FilePathDisplay || finding.FilePath)}</span>
   </div>
   <div class="detail">
     <span class="label">Line:</span>
@@ -1222,11 +1245,11 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   </div>
   <div class="detail">
     <span class="label">Project:</span>
-    <span class="value">${finding.Project}</span>
+    <span class="value">${esc(finding.Project)}</span>
   </div>
   <div class="detail">
     <span class="label">Accessibility:</span>
-    <span class="value">${finding.Accessibility}</span>
+    <span class="value">${esc(finding.Accessibility)}</span>
   </div>
   ${finding.confidence !== undefined ? `
   <div class="detail">
@@ -1237,7 +1260,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   ${finding.Remarks ? `
   <div class="detail">
     <span class="label">Remarks:</span>
-    <span class="value">${finding.Remarks}</span>
+    <span class="value">${esc(finding.Remarks)}</span>
   </div>
   ` : ""}
 </body>
