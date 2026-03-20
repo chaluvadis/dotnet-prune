@@ -90,9 +90,10 @@ export class DiagnosticProvider {
   }
 
   private formatMessage(finding: Finding): string {
-    const confidence = finding.confidence
-      ? ` (confidence: ${finding.confidence}%)`
-      : "";
+    const confidence =
+      finding.confidence !== undefined && finding.confidence !== null
+        ? ` (confidence: ${finding.confidence}%)`
+        : "";
     return `Unused ${finding.SymbolKind.toLowerCase()}: ${finding.SymbolName} in ${finding.ContainingType}${confidence}`;
   }
 }

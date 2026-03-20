@@ -135,6 +135,10 @@ export class InlineDecorator {
   }
 
   dispose(): void {
+    if (this.debounceHandle !== undefined) {
+      clearTimeout(this.debounceHandle);
+      this.debounceHandle = undefined;
+    }
     this.decorationType.dispose();
     for (const disposable of this.disposables) {
       disposable.dispose();

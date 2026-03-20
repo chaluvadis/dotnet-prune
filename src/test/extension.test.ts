@@ -1,7 +1,8 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
-import { getConfig } from '../../config';
-import { FindingFilter } from '../../filter';
+import { getConfig } from '../config';
+import { FindingFilter } from '../filter';
+import type { Finding } from '../diagnostics';
 
 suite('DotNetPrune Extension Test Suite', () => {
 	vscode.window.showInformationMessage('Start all tests.');
@@ -54,7 +55,7 @@ suite('DotNetPrune Extension Test Suite', () => {
 				Project: 'TestProject',
 				FilePath: '/test/file.cs',
 				confidence: 90,
-			};
+			} as Finding;
 
 			const propertyFinding = {
 				SymbolKind: 'Property',
@@ -62,7 +63,7 @@ suite('DotNetPrune Extension Test Suite', () => {
 				Project: 'TestProject',
 				FilePath: '/test/file.cs',
 				confidence: 90,
-			};
+			} as Finding;
 
 			assert.strictEqual(filter.matches(methodFinding), true);
 			assert.strictEqual(filter.matches(propertyFinding), false);
@@ -78,7 +79,7 @@ suite('DotNetPrune Extension Test Suite', () => {
 				Project: 'TestProject',
 				FilePath: '/test/file.cs',
 				confidence: 90,
-			};
+			} as Finding;
 
 			const lowConfidenceFinding = {
 				SymbolKind: 'Method',
@@ -86,7 +87,7 @@ suite('DotNetPrune Extension Test Suite', () => {
 				Project: 'TestProject',
 				FilePath: '/test/file.cs',
 				confidence: 70,
-			};
+			} as Finding;
 
 			assert.strictEqual(filter.matches(highConfidenceFinding), true);
 			assert.strictEqual(filter.matches(lowConfidenceFinding), false);
@@ -102,7 +103,7 @@ suite('DotNetPrune Extension Test Suite', () => {
 				Project: 'ProjectA',
 				FilePath: '/test/file.cs',
 				confidence: 90,
-			};
+			} as Finding;
 
 			const projectBFinding = {
 				SymbolKind: 'Method',
@@ -110,7 +111,7 @@ suite('DotNetPrune Extension Test Suite', () => {
 				Project: 'ProjectB',
 				FilePath: '/test/file.cs',
 				confidence: 90,
-			};
+			} as Finding;
 
 			assert.strictEqual(filter.matches(projectAFinding), true);
 			assert.strictEqual(filter.matches(projectBFinding), false);
@@ -128,7 +129,7 @@ suite('DotNetPrune Extension Test Suite', () => {
 				FilePath: '/test/file.cs',
 				Remarks: '',
 				confidence: 90,
-			};
+			} as Finding;
 
 			const nonMatchingFinding = {
 				SymbolKind: 'Method',
@@ -138,7 +139,7 @@ suite('DotNetPrune Extension Test Suite', () => {
 				FilePath: '/test/file.cs',
 				Remarks: '',
 				confidence: 90,
-			};
+			} as Finding;
 
 			assert.strictEqual(filter.matches(matchingFinding), true);
 			assert.strictEqual(filter.matches(nonMatchingFinding), false);
@@ -168,7 +169,7 @@ suite('DotNetPrune Extension Test Suite', () => {
 				Project: 'TestProject',
 				FilePath: '/test/file.cs',
 				confidence: 90,
-			};
+			} as Finding;
 
 			const wrongKindFinding = {
 				SymbolKind: 'Property',
@@ -176,7 +177,7 @@ suite('DotNetPrune Extension Test Suite', () => {
 				Project: 'TestProject',
 				FilePath: '/test/file.cs',
 				confidence: 90,
-			};
+			} as Finding;
 
 			const lowConfidenceFinding = {
 				SymbolKind: 'Method',
@@ -184,7 +185,7 @@ suite('DotNetPrune Extension Test Suite', () => {
 				Project: 'TestProject',
 				FilePath: '/test/file.cs',
 				confidence: 70,
-			};
+			} as Finding;
 
 			assert.strictEqual(filter.matches(matchingFinding), true);
 			assert.strictEqual(filter.matches(wrongKindFinding), false);
