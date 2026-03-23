@@ -10,9 +10,9 @@ export class CodeActionsProvider implements vscode.CodeActionProvider {
 
   provideCodeActions(
     document: vscode.TextDocument,
-    range: vscode.Range,
+    _range: vscode.Range,
     context: vscode.CodeActionContext,
-    token: vscode.CancellationToken
+    _token: vscode.CancellationToken
   ): vscode.CodeAction[] | undefined {
     const actions: vscode.CodeAction[] = [];
 
@@ -25,8 +25,8 @@ export class CodeActionsProvider implements vscode.CodeActionProvider {
       return undefined;
     }
 
-    // Find the corresponding finding
-    const finding = this.findFindingForLocation(document.uri.fsPath, range.start.line);
+    // Find the corresponding finding by matching the diagnostic's exact line
+    const finding = this.findFindingForLocation(document.uri.fsPath, dotnetPruneDiagnostics[0].range.start.line);
 
     if (!finding) {
       return undefined;
@@ -81,7 +81,7 @@ export class CodeActionsProvider implements vscode.CodeActionProvider {
     return this.findings.find(
       (f) =>
         f.FilePath === filePath &&
-        Math.abs(f.Line - targetLine) <= 2 // Allow some tolerance
+        f.Line === targetLine // Exact line match using the diagnostic's recorded range
     );
   }
 }

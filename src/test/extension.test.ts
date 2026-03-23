@@ -8,6 +8,40 @@ suite('DotNetPrune Extension Test Suite', () => {
 	vscode.window.showInformationMessage('Start all tests.');
 
 	suite('Configuration Tests', () => {
+		const SETTINGS_TO_RESET = [
+			'analysis.includePublicSymbols',
+			'analysis.includeInternalSymbols',
+			'analysis.excludeGeneratedCode',
+			'analysis.mode',
+			'filter.exclusionPatterns',
+			'ui.enableInlineHighlighting',
+			'ui.showConfidence',
+			'ui.showSeverity',
+			'autoRefreshOnSave',
+			'maxFindings',
+			'excludeGlobs',
+			'analyzerPath',
+			'logLevel',
+		];
+
+		setup(async () => {
+			const wsConfig = vscode.workspace.getConfiguration('dotnetprune');
+			await Promise.all(
+				SETTINGS_TO_RESET.map((key) =>
+					wsConfig.update(key, undefined, vscode.ConfigurationTarget.Workspace)
+				)
+			);
+		});
+
+		teardown(async () => {
+			const wsConfig = vscode.workspace.getConfiguration('dotnetprune');
+			await Promise.all(
+				SETTINGS_TO_RESET.map((key) =>
+					wsConfig.update(key, undefined, vscode.ConfigurationTarget.Workspace)
+				)
+			);
+		});
+
 		test('Should load default configuration', () => {
 			const config = getConfig();
 			assert.strictEqual(config.analysis.includePublicSymbols, true);
