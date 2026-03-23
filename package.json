@@ -35,7 +35,10 @@
     "onCommand:dotnetprune.bulkDelete",
     "onCommand:dotnetprune.ignoreFinding",
     "onCommand:dotnetprune.deleteFinding",
-    "onCommand:dotnetprune.showFindingDetails"
+    "onCommand:dotnetprune.showFindingDetails",
+    "onCommand:dotnetprune.openFinding",
+    "onCommand:dotnetprune.copyFilePath",
+    "onCommand:dotnetprune.copyProjectName"
   ],
   "main": "./dist/extension.js",
   "contributes": {

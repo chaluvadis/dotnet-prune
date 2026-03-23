@@ -272,7 +272,8 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   getAllFindings(): Finding[] {
-    return this.allFindings;
+    // Return a shallow copy to prevent external mutation of internal state
+    return this.allFindings.slice();
   }
 
   refresh(): void {
@@ -306,17 +307,21 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   async runAnalysisAndRefresh(silent: boolean = false): Promise<void> {
     // Workspace trust guard
     if (!vscode.workspace.isTrusted) {
-      vscode.window.showWarningMessage(
-        "DotNetPrune: Analysis requires a trusted workspace. Please trust this workspace to proceed."
-      );
+      if (!silent) {
+        vscode.window.showWarningMessage(
+          "DotNetPrune: Analysis requires a trusted workspace. Please trust this workspace to proceed."
+        );
+      }
       return;
     }
 
     // Run-lock: prevent overlapping analysis runs
     if (this.isAnalysisRunning) {
-      vscode.window.showWarningMessage(
-        "DotNetPrune: Analysis is already in progress. Please wait for it to complete."
-      );
+      if (!silent) {
+        vscode.window.showWarningMessage(
+          "DotNetPrune: Analysis is already in progress. Please wait for it to complete."
+        );
+      }
       return;
     }
 
@@ -410,16 +415,38 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
             const child = spawn("dotnet", [dllPath, chosenPath], {
               cwd: getWorkspaceRootPath(),
               stdio: ["ignore", "pipe", "pipe"],
-              timeout: 300000, // 5 minute timeout
             });
 
             let stdout = "";
             let stderr = "";
             let cancelled = false;
 
+            // Explicit 5-minute timeout to ensure hung processes are killed
+            const TIMEOUT_MS = 300000;
+            const timeoutHandle = setTimeout(() => {
+              if (!cancelled) {
+                cancelled = true;
+                child.kill();
+                const msg =
+                  "Analysis timed out. Try running on a smaller project or increasing the timeout.";
+                this.appendToOutput(msg, "error");
+                vscode.window
+                  .showErrorMessage(`DotNetPrune: ${msg}`, "Open Output")
+                  .then((choice) => {
+                    if (choice === "Open Output") {
+                      outputChannel?.show(true);
+                    }
+                  });
+                resolve(false);
+              }
+            }, TIMEOUT_MS);
+
+            const cleanup = () => clearTimeout(timeoutHandle);
+
             // Handle cancellation
             token.onCancellationRequested(() => {
               cancelled = true;
+              cleanup();
               child.kill();
               resolve(false);
             });
@@ -435,6 +462,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
             child.on("close", async (code: number) => {
               // No-op after cancellation to avoid double-resolve and spurious errors
               if (cancelled) return;
+              cleanup();
               try {
                 // Check exit code - code 1 means findings detected (success), other codes are errors
                 if (code !== 0 && code !== 1) {
@@ -516,6 +544,8 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
             child.on("error", (error: NodeJS.ErrnoException) => {
               if (cancelled) return;
+              cleanup();
+              cancelled = true;
               let userMessage: string;
               if (error.code === "ENOENT") {
                 userMessage =
