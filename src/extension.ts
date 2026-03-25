@@ -8,6 +8,7 @@ import { DiagnosticProvider } from "./diagnostics";
 import { CodeActionsProvider } from "./codeActions";
 import { FindingsExporter } from "./export";
 import { InlineDecorator } from "./decorator";
+import { PackageInventoryProvider } from "./packageInventory";
 
 let outputChannel: vscode.OutputChannel | undefined;
 
@@ -35,6 +36,16 @@ export function activate(context: vscode.ExtensionContext) {
     treeDataProvider: provider,
     showCollapseAll: true,
   });
+
+  // Package inventory view (Phase 1 read-only)
+  const packageProvider = new PackageInventoryProvider(context);
+  const packageTreeView = vscode.window.createTreeView(
+    "dotnetprune-packages",
+    {
+      treeDataProvider: packageProvider,
+      showCollapseAll: true,
+    }
+  );
 
   // Initialize new features
   const diagnosticProvider = new DiagnosticProvider();
@@ -64,6 +75,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     treeView,
+    packageTreeView,
     diagnosticProvider,
     codeActionsRegistration,
     decorator,
@@ -165,6 +177,19 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("dotnetprune.bulkDelete", async () => {
       await provider.bulkDelete();
+    }),
+    // Package inventory commands (Phase 1 read-only)
+    vscode.commands.registerCommand(
+      "dotnetprune.analyzePackages",
+      async () => {
+        await packageProvider.runAnalysis(false);
+      }
+    ),
+    vscode.commands.registerCommand("dotnetprune.refreshPackages", () => {
+      packageProvider.refresh();
+    }),
+    vscode.commands.registerCommand("dotnetprune.clearPackages", () => {
+      packageProvider.clear();
     })
   );
 

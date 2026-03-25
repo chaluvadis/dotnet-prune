@@ -22,6 +22,7 @@
   ],
   "activationEvents": [
     "onView:dotnetprune-findings",
+    "onView:dotnetprune-packages",
     "onCommand:dotnetprune.runAnalysis",
     "onCommand:dotnetprune.refresh",
     "onCommand:dotnetprune.clearFindings",
@@ -38,7 +39,10 @@
     "onCommand:dotnetprune.showFindingDetails",
     "onCommand:dotnetprune.openFinding",
     "onCommand:dotnetprune.copyFilePath",
-    "onCommand:dotnetprune.copyProjectName"
+    "onCommand:dotnetprune.copyProjectName",
+    "onCommand:dotnetprune.analyzePackages",
+    "onCommand:dotnetprune.refreshPackages",
+    "onCommand:dotnetprune.clearPackages"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -106,6 +110,21 @@
       {
         "command": "dotnetprune.deleteFinding",
         "title": "Delete Unused Code"
+      },
+      {
+        "command": "dotnetprune.analyzePackages",
+        "title": "$(search) Analyze Packages",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.refreshPackages",
+        "title": "$(refresh) Refresh",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.clearPackages",
+        "title": "$(clear-all) Clear",
+        "category": "DotNetPrune"
       }
     ],
     "configuration": {
@@ -250,6 +269,11 @@
           "id": "dotnetprune-findings",
           "name": "Findings",
           "icon": "resources/icon.png"
+        },
+        {
+          "id": "dotnetprune-packages",
+          "name": "Package References",
+          "icon": "resources/icon.png"
         }
       ]
     },
@@ -289,6 +313,21 @@
           "command": "dotnetprune.filterByProject",
           "when": "view == dotnetprune-findings",
           "group": "1_filters@4"
+        },
+        {
+          "command": "dotnetprune.analyzePackages",
+          "when": "view == dotnetprune-packages",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dotnetprune.refreshPackages",
+          "when": "view == dotnetprune-packages",
+          "group": "navigation@2"
+        },
+        {
+          "command": "dotnetprune.clearPackages",
+          "when": "view == dotnetprune-packages",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
