@@ -27,6 +27,11 @@ export interface DotNetPruneConfig {
     enableProblemsPanel: boolean;
     enableCodeActions: boolean;
   };
+  prune: {
+    runRestoreAfterPrune: boolean;
+    runBuildAfterPrune: boolean;
+    allowlistPath: string;
+  };
   autoRefreshOnSave: boolean;
   maxFindings: number;
   excludeGlobs: string[];
@@ -77,6 +82,11 @@ export function getConfig(): DotNetPruneConfig {
     integration: {
       enableProblemsPanel: config.get("integration.enableProblemsPanel", true),
       enableCodeActions: config.get("integration.enableCodeActions", true),
+    },
+    prune: {
+      runRestoreAfterPrune: config.get("prune.runRestoreAfterPrune", false),
+      runBuildAfterPrune: config.get("prune.runBuildAfterPrune", false),
+      allowlistPath: config.get("prune.allowlistPath", ""),
     },
     autoRefreshOnSave: config.get("autoRefreshOnSave", false),
     maxFindings: config.get("maxFindings", 1000),

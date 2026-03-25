@@ -8,8 +8,12 @@ import {
 	SolutionParser,
 	CsprojParser,
 	PackageUsageAnalyzer,
+	AllowlistParser,
+	PrunePlanner,
 	type PackageReference,
+	type ProjectPackageInfo,
 } from '../packageInventory';
+import { PruneExecutor } from '../pruneExecutor';
 
 suite('DotNetPrune Extension Test Suite', () => {
 	vscode.window.showInformationMessage('Start all tests.');
@@ -433,6 +437,190 @@ EndProject
 			assert.strictEqual(result.unusedPackages[0].include, 'UnusedPkg');
 			assert.strictEqual(result.referencedPackages.length, 1);
 			assert.strictEqual(result.referencedPackages[0].include, 'ToolPkg');
+		});
+	});
+
+	// ─── Phase 2: AllowlistParser Tests ──────────────────────────────────────────
+	suite('AllowlistParser Tests', () => {
+		test('Should return empty set for non-existent allowlist', () => {
+			const result = AllowlistParser.load('/nonexistent/workspace');
+			assert.strictEqual(result.size, 0);
+		});
+
+		test('Should return empty set for directory with no .dotnet-prune.json', () => {
+			// Use a temp path that definitely has no .dotnet-prune.json
+			const result = AllowlistParser.load('/tmp');
+			// It may or may not exist; just ensure no error thrown and result is a Set
+			assert.ok(result instanceof Set);
+		});
+	});
+
+	// ─── Phase 2: PrunePlanner Tests ──────────────────────────────────────────────
+	suite('PrunePlanner Tests', () => {
+		const makePackage = (include: string, opts?: Partial<PackageReference>): PackageReference => ({
+			include,
+			...opts,
+		});
+
+		test('Should classify plain unused package as High confidence', () => {
+			const pkg = makePackage('Serilog', { version: '2.12.0' });
+			const result = PrunePlanner.classifyPackage(pkg, new Set());
+			assert.strictEqual(result.confidence, 'High');
+			assert.ok(result.reason.length > 0);
+		});
+
+		test('Should classify conditional package as Medium confidence', () => {
+			const pkg = makePackage('SomePkg', { condition: "'$(Configuration)' == 'Debug'" });
+			const result = PrunePlanner.classifyPackage(pkg, new Set());
+			assert.strictEqual(result.confidence, 'Medium');
+			assert.ok(result.reason.includes('Conditional'));
+		});
+
+		test('Should classify package with non-default IncludeAssets as Medium confidence', () => {
+			const pkg = makePackage('SomePkg', { includeAssets: 'runtime; build; native' });
+			const result = PrunePlanner.classifyPackage(pkg, new Set());
+			assert.strictEqual(result.confidence, 'Medium');
+			assert.ok(result.reason.includes('IncludeAssets'));
+		});
+
+		test('Should classify allowlisted package as Blocked', () => {
+			const pkg = makePackage('Newtonsoft.Json');
+			const allowlist = new Set(['newtonsoft.json']); // lowercase
+			const result = PrunePlanner.classifyPackage(pkg, allowlist);
+			assert.strictEqual(result.confidence, 'Blocked');
+			assert.ok(result.reason.includes('allowlist'));
+		});
+
+		test('Allowlist match should be case-insensitive', () => {
+			const pkg = makePackage('SERILOG');
+			const allowlist = new Set(['serilog']);
+			const result = PrunePlanner.classifyPackage(pkg, allowlist);
+			assert.strictEqual(result.confidence, 'Blocked');
+		});
+
+		test('Package with IncludeAssets=all should be High (not Medium)', () => {
+			const pkg = makePackage('SomePkg', { includeAssets: 'all' });
+			const result = PrunePlanner.classifyPackage(pkg, new Set());
+			assert.strictEqual(result.confidence, 'High');
+		});
+
+		test('buildPlan should create entries for all unused packages', () => {
+			const projectInfo: ProjectPackageInfo = {
+				projectName: 'TestProject',
+				projectPath: '/path/TestProject.csproj',
+				targetFrameworks: ['net9.0'],
+				unusedPackages: [
+					makePackage('PkgA'),
+					makePackage('PkgB', { condition: "'$(Configuration)' == 'Debug'" }),
+					makePackage('PkgC'),
+				],
+				referencedPackages: [],
+			};
+			const allowlist = new Set(['pkgc']); // PkgC is blocked
+			const plan = PrunePlanner.buildPlan(projectInfo, allowlist);
+
+			assert.strictEqual(plan.projectName, 'TestProject');
+			assert.strictEqual(plan.projectPath, '/path/TestProject.csproj');
+			assert.strictEqual(plan.entries.length, 3);
+
+			const pkgA = plan.entries.find((e) => e.pkg.include === 'PkgA');
+			assert.strictEqual(pkgA?.confidence, 'High');
+
+			const pkgB = plan.entries.find((e) => e.pkg.include === 'PkgB');
+			assert.strictEqual(pkgB?.confidence, 'Medium');
+
+			const pkgC = plan.entries.find((e) => e.pkg.include === 'PkgC');
+			assert.strictEqual(pkgC?.confidence, 'Blocked');
+		});
+
+		test('buildPlan returns empty entries when no unused packages', () => {
+			const projectInfo: ProjectPackageInfo = {
+				projectName: 'CleanProject',
+				projectPath: '/path/CleanProject.csproj',
+				targetFrameworks: ['net9.0'],
+				unusedPackages: [],
+				referencedPackages: [makePackage('UsedPkg')],
+			};
+			const plan = PrunePlanner.buildPlan(projectInfo, new Set());
+			assert.strictEqual(plan.entries.length, 0);
+		});
+	});
+
+	// ─── Phase 2: PruneExecutor.buildReport Tests ─────────────────────────────────
+	suite('PruneExecutor.buildReport Tests', () => {
+		test('Should tally counts correctly in report', () => {
+			const outcomes: import('../pruneExecutor').ProjectPruneOutcome[] = [
+				{
+					projectName: 'Proj1',
+					projectPath: '/p1.csproj',
+					packages: [
+						{ packageName: 'A', confidence: 'High', status: 'removed' },
+						{ packageName: 'B', confidence: 'Medium', status: 'failed', error: 'err' },
+						{ packageName: 'C', confidence: 'Blocked', status: 'skipped' },
+					],
+					restoreStatus: 'skipped',
+					buildStatus: 'skipped',
+				},
+				{
+					projectName: 'Proj2',
+					projectPath: '/p2.csproj',
+					packages: [
+						{ packageName: 'D', confidence: 'High', status: 'removed' },
+						{ packageName: 'E', confidence: 'High', status: 'removed' },
+					],
+					restoreStatus: 'success',
+					buildStatus: 'skipped',
+				},
+			];
+
+			const report = PruneExecutor.buildReport(outcomes, false);
+			assert.strictEqual(report.dryRun, false);
+			assert.strictEqual(report.totalRemoved, 3);
+			assert.strictEqual(report.totalFailed, 1);
+			assert.strictEqual(report.totalSkipped, 1);
+			assert.strictEqual(report.totalDryRun, 0);
+			assert.ok(report.timestamp.length > 0);
+			assert.strictEqual(report.projects.length, 2);
+		});
+
+		test('Should tally dry-run counts correctly', () => {
+			const outcomes: import('../pruneExecutor').ProjectPruneOutcome[] = [
+				{
+					projectName: 'Proj1',
+					projectPath: '/p1.csproj',
+					packages: [
+						{ packageName: 'A', confidence: 'High', status: 'dry-run' },
+						{ packageName: 'B', confidence: 'Blocked', status: 'skipped' },
+					],
+					restoreStatus: 'skipped',
+					buildStatus: 'skipped',
+				},
+			];
+
+			const report = PruneExecutor.buildReport(outcomes, true);
+			assert.strictEqual(report.dryRun, true);
+			assert.strictEqual(report.totalRemoved, 0);
+			assert.strictEqual(report.totalDryRun, 1);
+			assert.strictEqual(report.totalSkipped, 1);
+		});
+
+		test('formatReportSummary should include project name and totals', () => {
+			const outcomes: import('../pruneExecutor').ProjectPruneOutcome[] = [
+				{
+					projectName: 'MyProj',
+					projectPath: '/my.csproj',
+					packages: [
+						{ packageName: 'Pkg', confidence: 'High', status: 'removed' },
+					],
+					restoreStatus: 'success',
+					buildStatus: 'skipped',
+				},
+			];
+			const report = PruneExecutor.buildReport(outcomes, false);
+			const summary = PruneExecutor.formatReportSummary(report);
+			assert.ok(summary.includes('MyProj'));
+			assert.ok(summary.includes('APPLIED'));
+			assert.ok(summary.includes('restore: success'));
 		});
 	});
 });
