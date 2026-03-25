@@ -68,6 +68,47 @@ export class AllowlistParser {
   }
 }
 
+// ─── Allowlist Writer ─────────────────────────────────────────────────────────
+
+/**
+ * Safely adds a package to the `.dotnet-prune.json` allowlist in the workspace
+ * root. Creates the file if it does not exist. Returns the path to the file.
+ */
+export class AllowlistWriter {
+  static add(workspacePath: string, packageName: string): string {
+    const allowlistPath = path.join(workspacePath, ".dotnet-prune.json");
+    let config: AllowlistConfig = { allowlist: [] };
+    try {
+      if (fs.existsSync(allowlistPath)) {
+        const raw = fs.readFileSync(allowlistPath, "utf-8");
+        const parsed = JSON.parse(raw) as AllowlistConfig;
+        if (Array.isArray(parsed.allowlist)) {
+          config = parsed;
+        }
+      }
+    } catch {
+      // start fresh if the file is corrupt
+      config = { allowlist: [] };
+    }
+
+    const lower = packageName.toLowerCase();
+    const alreadyPresent = config.allowlist.some(
+      (e) => e.toLowerCase() === lower
+    );
+    if (!alreadyPresent) {
+      config.allowlist = [...config.allowlist, packageName];
+    }
+
+    fs.writeFileSync(allowlistPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+    return allowlistPath;
+  }
+
+  /** Returns the path to the allowlist file for a workspace root. */
+  static getPath(workspacePath: string): string {
+    return path.join(workspacePath, ".dotnet-prune.json");
+  }
+}
+
 // ─── Prune Planner ────────────────────────────────────────────────────────────
 
 /** Classifies unused package references by prune confidence. */
@@ -342,6 +383,32 @@ export class PackageUsageAnalyzer {
   }
 }
 
+// ─── Csproj Navigator ─────────────────────────────────────────────────────────
+
+/**
+ * Finds the line number (0-based) of a `PackageReference` element for a given
+ * package name in a `.csproj` file. Returns undefined if not found.
+ */
+export class CsprojNavigator {
+  static findPackageReferenceLine(
+    csprojContent: string,
+    packageName: string
+  ): number | undefined {
+    const lines = csprojContent.split("\n");
+    const lower = packageName.toLowerCase();
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (
+        /PackageReference/i.test(line) &&
+        line.toLowerCase().includes(`include="${lower}`)
+      ) {
+        return i;
+      }
+    }
+    return undefined;
+  }
+}
+
 // ─── TreeItem Classes ─────────────────────────────────────────────────────────
 
 abstract class PkgTreeItemBase extends vscode.TreeItem {}
@@ -478,6 +545,9 @@ export class PackageInventoryProvider
   private isAnalysisRunning = false;
   private outputChannel: vscode.OutputChannel | undefined;
   private lastAllowlist: Set<string> = new Set();
+  private lastSolutionPath: string | undefined;
+  private confidenceFilter: PruneConfidence | "All" = "All";
+  private _cancellationSource: vscode.CancellationTokenSource | undefined;
 
   constructor(_context: vscode.ExtensionContext) {}
 
@@ -497,6 +567,30 @@ export class PackageInventoryProvider
   /** Returns the allowlist used in the last analysis. */
   getAllowlist(): Set<string> {
     return new Set(this.lastAllowlist);
+  }
+
+  /** Returns the path of the last analyzed solution, if any. */
+  getLastSolutionPath(): string | undefined {
+    return this.lastSolutionPath;
+  }
+
+  /** Returns the workspace root, falling back to the solution directory. */
+  getWorkspaceRoot(): string | undefined {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  }
+
+  /** Returns the active confidence filter ("All" = no filter). */
+  getConfidenceFilter(): PruneConfidence | "All" {
+    return this.confidenceFilter;
+  }
+
+  /**
+   * Sets a confidence filter on unused packages. Pass "All" to clear the
+   * filter. Fires a tree-data change event so the view refreshes immediately.
+   */
+  setConfidenceFilter(filter: PruneConfidence | "All"): void {
+    this.confidenceFilter = filter;
+    this._onDidChangeTreeData.fire(undefined);
   }
 
   private log(
@@ -567,14 +661,20 @@ export class PackageInventoryProvider
         ]);
       }
 
+      // Apply confidence filter to unused count for the group label
+      const filteredUnused = this.applyConfidenceFilter(
+        proj.unusedPackages,
+        proj.prunePlan
+      );
+
       // Unused group first, then referenced
       return Promise.resolve([
         new PackageGroupTreeItem(
           "unused",
-          proj.unusedPackages.length,
+          filteredUnused.length,
           element.solutionPath,
           proj,
-          proj.unusedPackages.length > 0
+          filteredUnused.length > 0
             ? vscode.TreeItemCollapsibleState.Expanded
             : vscode.TreeItemCollapsibleState.None
         ),
@@ -594,17 +694,23 @@ export class PackageInventoryProvider
           ? element.projectInfo.unusedPackages
           : element.projectInfo.referencedPackages;
 
-      if (packages.length === 0) {
-        return Promise.resolve([
-          new EmptyStatePackageTreeItem(
-            element.groupType === "unused"
-              ? "No unused packages"
-              : "No referenced packages"
-          ),
-        ]);
-      }
-
       if (element.groupType === "unused") {
+        // Apply confidence filter
+        const filtered = this.applyConfidenceFilter(
+          packages,
+          element.projectInfo.prunePlan
+        );
+
+        if (filtered.length === 0) {
+          return Promise.resolve([
+            new EmptyStatePackageTreeItem(
+              this.confidenceFilter !== "All"
+                ? `No ${this.confidenceFilter}-confidence unused packages`
+                : "No unused packages"
+            ),
+          ]);
+        }
+
         // Build a lookup map from pkg.include → prune entry for O(1) confidence lookup
         const planMap = new Map<string, PackagePruneEntry>();
         if (element.projectInfo.prunePlan) {
@@ -613,7 +719,7 @@ export class PackageInventoryProvider
           }
         }
         return Promise.resolve(
-          packages.map((pkg) => {
+          filtered.map((pkg) => {
             const entry = planMap.get(pkg.include);
             return new PackageTreeItem(
               pkg,
@@ -625,6 +731,12 @@ export class PackageInventoryProvider
             );
           })
         );
+      }
+
+      if (packages.length === 0) {
+        return Promise.resolve([
+          new EmptyStatePackageTreeItem("No referenced packages"),
+        ]);
       }
 
       return Promise.resolve(
@@ -642,6 +754,28 @@ export class PackageInventoryProvider
     return Promise.resolve([]);
   }
 
+  /**
+   * Applies the current confidence filter to a list of packages.
+   * If filter is "All", returns all packages unchanged.
+   */
+  private applyConfidenceFilter(
+    packages: PackageReference[],
+    prunePlan: ProjectPrunePlan | undefined
+  ): PackageReference[] {
+    if (this.confidenceFilter === "All") return packages;
+
+    const planMap = new Map<string, PackagePruneEntry>();
+    if (prunePlan) {
+      for (const entry of prunePlan.entries) {
+        planMap.set(entry.pkg.include, entry);
+      }
+    }
+    return packages.filter((pkg) => {
+      const entry = planMap.get(pkg.include);
+      return entry?.confidence === this.confidenceFilter;
+    });
+  }
+
   refresh(): void {
     this.runAnalysis(true).catch((err) => {
       vscode.window.showErrorMessage(
@@ -653,6 +787,11 @@ export class PackageInventoryProvider
   clear(): void {
     this.inventories = [];
     this._onDidChangeTreeData.fire(undefined);
+  }
+
+  /** Cancels any in-progress analysis. */
+  cancelAnalysis(): void {
+    this._cancellationSource?.cancel();
   }
 
   async runAnalysis(silent: boolean = false): Promise<void> {
@@ -706,7 +845,13 @@ export class PackageInventoryProvider
     }
 
     let chosenSolution: vscode.Uri;
-    if (allSolutions.length === 1 || silent) {
+    if (silent && this.lastSolutionPath) {
+      // Reuse the last chosen solution for silent (incremental) refreshes
+      const saved = allSolutions.find(
+        (u) => u.fsPath === this.lastSolutionPath
+      );
+      chosenSolution = saved ?? allSolutions[0];
+    } else if (allSolutions.length === 1 || silent) {
       chosenSolution = allSolutions[0];
     } else {
       const workspaceRoot = workspaceFolders[0].uri.fsPath;
@@ -721,21 +866,40 @@ export class PackageInventoryProvider
       chosenSolution = sel.uri;
     }
 
+    // Cancel any previous in-flight analysis
+    this._cancellationSource?.cancel();
+    this._cancellationSource = new vscode.CancellationTokenSource();
+    const token = this._cancellationSource.token;
+
     this.isAnalysisRunning = true;
     try {
       const inventory = await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
           title: "DotNetPrune:",
-          cancellable: false,
+          cancellable: true,
         },
-        async (progress) => {
+        async (progress, progressToken) => {
+          // Merge both cancellation sources
+          progressToken.onCancellationRequested(() => {
+            this._cancellationSource?.cancel();
+          });
+
           progress.report({ message: "Analyzing package references..." });
-          return this.buildInventory(chosenSolution.fsPath);
+
+          if (token.isCancellationRequested) return undefined;
+
+          return this.buildInventory(chosenSolution.fsPath, progress, token);
         }
       );
 
+      if (token.isCancellationRequested || inventory === undefined) {
+        this.log("Package analysis was cancelled.", "info");
+        return;
+      }
+
       this.inventories = [inventory];
+      this.lastSolutionPath = chosenSolution.fsPath;
       this._onDidChangeTreeData.fire(undefined);
 
       const totalUnused = inventory.projects.reduce(
@@ -751,7 +915,11 @@ export class PackageInventoryProvider
     }
   }
 
-  private buildInventory(solutionPath: string): SolutionInventory {
+  private buildInventory(
+    solutionPath: string,
+    progress?: vscode.Progress<{ message?: string; increment?: number }>,
+    token?: vscode.CancellationToken
+  ): SolutionInventory {
     const solutionName = path.basename(
       solutionPath,
       path.extname(solutionPath)
@@ -775,8 +943,10 @@ export class PackageInventoryProvider
 
     const projects: ProjectPackageInfo[] = [];
     for (const projectPath of projectPaths) {
+      if (token?.isCancellationRequested) break;
       try {
         const projectName = path.basename(projectPath, ".csproj");
+        progress?.report({ message: `Analyzing ${projectName}...` });
         const content = fs.readFileSync(projectPath, "utf-8");
         const packages = CsprojParser.getPackageReferences(content);
         const targetFrameworks = CsprojParser.getTargetFrameworks(content);

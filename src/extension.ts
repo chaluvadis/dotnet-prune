@@ -12,6 +12,8 @@ import {
   PackageInventoryProvider,
   PackageGroupTreeItem,
   PackageTreeItem,
+  AllowlistWriter,
+  CsprojNavigator,
 } from "./packageInventory";
 import { PruneExecutor } from "./pruneExecutor";
 
@@ -258,8 +260,137 @@ export function activate(context: vscode.ExtensionContext) {
       async () => {
         await exportLastPruneReport();
       }
+    ),
+    // Phase 3: Trust controls
+    vscode.commands.registerCommand(
+      "dotnetprune.suppressPackage",
+      async (item: PackageTreeItem) => {
+        if (!item || !item.isUnused) return;
+        const workspaceRoot = packageProvider.getWorkspaceRoot();
+        if (!workspaceRoot) {
+          vscode.window.showErrorMessage(
+            "DotNetPrune: Open a workspace to manage the allowlist."
+          );
+          return;
+        }
+        try {
+          AllowlistWriter.add(workspaceRoot, item.pkg.include);
+          vscode.window.showInformationMessage(
+            `DotNetPrune: "${item.pkg.include}" added to allowlist. Re-analyzing...`
+          );
+          packageProvider.refresh();
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `DotNetPrune: Failed to update allowlist: ${err}`
+          );
+        }
+      }
+    ),
+    vscode.commands.registerCommand(
+      "dotnetprune.openAllowlistConfig",
+      async () => {
+        const workspaceRoot = packageProvider.getWorkspaceRoot();
+        if (!workspaceRoot) {
+          vscode.window.showErrorMessage(
+            "DotNetPrune: Open a workspace to manage the allowlist."
+          );
+          return;
+        }
+        const allowlistPath = AllowlistWriter.getPath(workspaceRoot);
+        // Create the file with default content if it doesn't exist
+        const fs = await import("node:fs");
+        if (!fs.existsSync(allowlistPath)) {
+          fs.writeFileSync(
+            allowlistPath,
+            JSON.stringify({ allowlist: [] }, null, 2) + "\n",
+            "utf-8"
+          );
+        }
+        const doc = await vscode.workspace.openTextDocument(allowlistPath);
+        await vscode.window.showTextDocument(doc);
+      }
+    ),
+    // Phase 3: Navigation — jump to PackageReference in .csproj
+    vscode.commands.registerCommand(
+      "dotnetprune.goToPackageReference",
+      async (item: PackageTreeItem) => {
+        if (!item || !item.projectPath) return;
+        try {
+          const fs = await import("node:fs");
+          const content = fs.readFileSync(item.projectPath, "utf-8");
+          const line = CsprojNavigator.findPackageReferenceLine(
+            content,
+            item.pkg.include
+          );
+          const doc = await vscode.workspace.openTextDocument(item.projectPath);
+          const editor = await vscode.window.showTextDocument(doc);
+          if (line !== undefined) {
+            const position = new vscode.Position(line, 0);
+            editor.selection = new vscode.Selection(position, position);
+            editor.revealRange(
+              new vscode.Range(position, position),
+              vscode.TextEditorRevealType.InCenter
+            );
+          }
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `DotNetPrune: Could not open .csproj file: ${err}`
+          );
+        }
+      }
+    ),
+    // Phase 3: Re-analyze now
+    vscode.commands.registerCommand(
+      "dotnetprune.reanalyzePackages",
+      () => {
+        packageProvider.refresh();
+      }
+    ),
+    // Phase 3: Filter packages tree by confidence
+    vscode.commands.registerCommand(
+      "dotnetprune.filterPackagesByConfidence",
+      async () => {
+        const current = packageProvider.getConfidenceFilter();
+        const items = [
+          { label: "$(list-unordered) All", value: "All" as const, description: current === "All" ? "active" : "" },
+          { label: "$(trash) High confidence only", value: "High" as const, description: current === "High" ? "active" : "" },
+          { label: "$(question) Medium confidence only", value: "Medium" as const, description: current === "Medium" ? "active" : "" },
+          { label: "$(lock) Blocked only", value: "Blocked" as const, description: current === "Blocked" ? "active" : "" },
+        ];
+        const sel = await vscode.window.showQuickPick(items, {
+          placeHolder: "Filter unused packages by confidence level",
+        });
+        if (!sel) return;
+        packageProvider.setConfidenceFilter(sel.value);
+      }
     )
   );
+
+  // Phase 3: File watcher — incremental re-analysis when .csproj or allowlist changes
+  const csprojWatcher = vscode.workspace.createFileSystemWatcher(
+    "**/*.csproj",
+    false, // create
+    false, // change
+    false  // delete
+  );
+  const allowlistWatcher = vscode.workspace.createFileSystemWatcher(
+    "**/.dotnet-prune.json"
+  );
+
+  const onRelevantFileChange = () => {
+    // Only trigger if the packages view has data (avoid spurious refreshes on first open)
+    if (packageProvider.getInventories().length > 0) {
+      packageProvider.refresh();
+    }
+  };
+
+  csprojWatcher.onDidChange(onRelevantFileChange);
+  csprojWatcher.onDidCreate(onRelevantFileChange);
+  csprojWatcher.onDidDelete(onRelevantFileChange);
+  allowlistWatcher.onDidChange(onRelevantFileChange);
+  allowlistWatcher.onDidCreate(onRelevantFileChange);
+
+  context.subscriptions.push(csprojWatcher, allowlistWatcher);
 
   // Pass providers to tree provider
   provider.setProviders(diagnosticProvider, codeActionsProvider, decorator);
@@ -360,15 +491,31 @@ async function runPruneFlow(
 
   const removed = outcome.packages.filter((p) => p.status === "removed").length;
   const failed = outcome.packages.filter((p) => p.status === "failed").length;
+  const skipped = outcome.packages.filter((p) => p.status === "skipped").length;
+
+  const summaryParts: string[] = [`Removed ${removed}`];
+  if (skipped > 0) summaryParts.push(`skipped ${skipped}`);
+  if (failed > 0) summaryParts.push(`failed ${failed}`);
+  const summaryMsg = `DotNetPrune: ${summaryParts.join(", ")} package(s) from ${plan.projectName}.`;
 
   if (failed > 0) {
     vscode.window.showWarningMessage(
-      `DotNetPrune: Pruned ${removed} package(s) with ${failed} failure(s). See Output for details.`
-    );
+      summaryMsg + " See Output for details.",
+      "Re-analyze Now"
+    ).then((action) => {
+      if (action === "Re-analyze Now") {
+        packageProvider.refresh();
+      }
+    });
   } else {
     vscode.window.showInformationMessage(
-      `DotNetPrune: Removed ${removed} package(s) from ${plan.projectName}.`
-    );
+      summaryMsg,
+      "Re-analyze Now"
+    ).then((action) => {
+      if (action === "Re-analyze Now") {
+        packageProvider.refresh();
+      }
+    });
   }
 }
 

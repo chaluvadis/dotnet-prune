@@ -47,7 +47,12 @@
     "onCommand:dotnetprune.applyPruneProject",
     "onCommand:dotnetprune.previewPrunePackage",
     "onCommand:dotnetprune.applyPrunePackage",
-    "onCommand:dotnetprune.exportPruneReport"
+    "onCommand:dotnetprune.exportPruneReport",
+    "onCommand:dotnetprune.suppressPackage",
+    "onCommand:dotnetprune.openAllowlistConfig",
+    "onCommand:dotnetprune.goToPackageReference",
+    "onCommand:dotnetprune.reanalyzePackages",
+    "onCommand:dotnetprune.filterPackagesByConfidence"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -155,6 +160,31 @@
         "command": "dotnetprune.exportPruneReport",
         "title": "$(export) Export Prune Report",
         "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.suppressPackage",
+        "title": "$(circle-slash) Don't Suggest Again",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.openAllowlistConfig",
+        "title": "$(edit) Open Allowlist Config",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.goToPackageReference",
+        "title": "$(go-to-file) Go to PackageReference",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.reanalyzePackages",
+        "title": "$(sync) Re-analyze Now",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.filterPackagesByConfidence",
+        "title": "$(filter) Filter by Confidence",
+        "category": "DotNetPrune"
       }
     ],
     "configuration": {
@@ -164,58 +194,85 @@
         "dotnetprune.analysis.includePublicSymbols": {
           "type": "boolean",
           "default": true,
-          "description": "Include public symbols in the analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "description": "Include public symbols in the analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.includeInternalSymbols": {
           "type": "boolean",
           "default": true,
-          "description": "Include internal symbols in the analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "description": "Include internal symbols in the analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.excludeGeneratedCode": {
           "type": "boolean",
           "default": true,
-          "description": "Exclude auto-generated code from analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "description": "Exclude auto-generated code from analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.mode": {
           "type": "string",
-          "enum": ["strict", "loose"],
+          "enum": [
+            "strict",
+            "loose"
+          ],
           "default": "loose",
-          "description": "Analysis mode: strict (fewer false positives) or loose (more comprehensive). (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "description": "Analysis mode: strict (fewer false positives) or loose (more comprehensive). (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.detectDeadCode": {
           "type": "boolean",
           "default": false,
-          "description": "Detect dead/unreachable code (experimental). (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "description": "Detect dead/unreachable code (experimental). (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.detectTodoComments": {
           "type": "boolean",
           "default": false,
-          "description": "Detect TODO/HACK/FIXME comments. (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "description": "Detect TODO/HACK/FIXME comments. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.filter.exclusionPatterns": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": ["**/bin/**", "**/obj/**", "**/node_modules/**"],
-          "description": "Glob patterns to exclude from analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "default": [
+            "**/bin/**",
+            "**/obj/**",
+            "**/node_modules/**"
+          ],
+          "description": "Glob patterns to exclude from analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.filter.inclusionPatterns": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": ["**/*.cs", "**/*.sln", "**/*.csproj"],
-          "description": "Glob patterns to include in analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "default": [
+            "**/*.cs",
+            "**/*.sln",
+            "**/*.csproj"
+          ],
+          "description": "Glob patterns to include in analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.filter.symbolKinds": {
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["Method", "Property", "Field", "Parameter", "Type", "Class", "Interface", "Struct", "Enum"]
+            "enum": [
+              "Method",
+              "Property",
+              "Field",
+              "Parameter",
+              "Type",
+              "Class",
+              "Interface",
+              "Struct",
+              "Enum"
+            ]
           },
-          "default": ["Method", "Property", "Field", "Parameter", "Type"],
-          "description": "Symbol kinds to analyze. (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "default": [
+            "Method",
+            "Property",
+            "Field",
+            "Parameter",
+            "Type"
+          ],
+          "description": "Symbol kinds to analyze. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.ui.enableInlineHighlighting": {
           "type": "boolean",
@@ -235,12 +292,12 @@
         "dotnetprune.performance.enableCaching": {
           "type": "boolean",
           "default": true,
-          "description": "Cache analysis results to improve performance. (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "description": "Cache analysis results to improve performance. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.performance.parallelAnalysis": {
           "type": "boolean",
           "default": true,
-          "description": "Enable parallel analysis of projects. (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "description": "Enable parallel analysis of projects. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.integration.enableProblemsPanel": {
           "type": "boolean",
@@ -269,7 +326,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Additional glob patterns to exclude from analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
+          "description": "Additional glob patterns to exclude from analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analyzerPath": {
           "type": "string",
@@ -278,7 +335,13 @@
         },
         "dotnetprune.logLevel": {
           "type": "string",
-          "enum": ["off", "error", "warn", "info", "debug"],
+          "enum": [
+            "off",
+            "error",
+            "warn",
+            "info",
+            "debug"
+          ],
           "default": "info",
           "description": "Log verbosity level for the DotNetPrune output channel"
         },
@@ -378,6 +441,16 @@
           "command": "dotnetprune.exportPruneReport",
           "when": "view == dotnetprune-packages",
           "group": "navigation@4"
+        },
+        {
+          "command": "dotnetprune.filterPackagesByConfidence",
+          "when": "view == dotnetprune-packages",
+          "group": "navigation@5"
+        },
+        {
+          "command": "dotnetprune.openAllowlistConfig",
+          "when": "view == dotnetprune-packages",
+          "group": "1_config@1"
         }
       ],
       "view/item/context": [
@@ -420,6 +493,21 @@
           "command": "dotnetprune.applyPrunePackage",
           "when": "view == dotnetprune-packages && viewItem =~ /^pkg-unused-(high|medium)$/",
           "group": "1_prune@2"
+        },
+        {
+          "command": "dotnetprune.suppressPackage",
+          "when": "view == dotnetprune-packages && viewItem =~ /^pkg-unused/",
+          "group": "2_suppress@1"
+        },
+        {
+          "command": "dotnetprune.goToPackageReference",
+          "when": "view == dotnetprune-packages && viewItem =~ /^pkg-unused/",
+          "group": "3_navigate@1"
+        },
+        {
+          "command": "dotnetprune.goToPackageReference",
+          "when": "view == dotnetprune-packages && viewItem == pkg-referenced",
+          "group": "3_navigate@1"
         }
       ]
     }
