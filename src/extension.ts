@@ -8,7 +8,12 @@ import { DiagnosticProvider } from "./diagnostics";
 import { CodeActionsProvider } from "./codeActions";
 import { FindingsExporter } from "./export";
 import { InlineDecorator } from "./decorator";
-import { PackageInventoryProvider } from "./packageInventory";
+import {
+  PackageInventoryProvider,
+  PackageGroupTreeItem,
+  PackageTreeItem,
+} from "./packageInventory";
+import { PruneExecutor } from "./pruneExecutor";
 
 let outputChannel: vscode.OutputChannel | undefined;
 
@@ -190,7 +195,70 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("dotnetprune.clearPackages", () => {
       packageProvider.clear();
-    })
+    }),
+    // Phase 2: Prune commands
+    vscode.commands.registerCommand(
+      "dotnetprune.previewPruneProject",
+      async (item: PackageGroupTreeItem) => {
+        if (!item || !item.projectInfo.prunePlan) {
+          vscode.window.showInformationMessage(
+            "DotNetPrune: No prune plan available. Run Analyze Packages first."
+          );
+          return;
+        }
+        await runPruneFlow(packageProvider, item.projectInfo.prunePlan, true);
+      }
+    ),
+    vscode.commands.registerCommand(
+      "dotnetprune.applyPruneProject",
+      async (item: PackageGroupTreeItem) => {
+        if (!item || !item.projectInfo.prunePlan) {
+          vscode.window.showInformationMessage(
+            "DotNetPrune: No prune plan available. Run Analyze Packages first."
+          );
+          return;
+        }
+        await runPruneFlow(packageProvider, item.projectInfo.prunePlan, false);
+        packageProvider.refresh();
+      }
+    ),
+    vscode.commands.registerCommand(
+      "dotnetprune.previewPrunePackage",
+      async (item: PackageTreeItem) => {
+        if (!item || !item.isUnused || !item.confidence || !item.projectPath) return;
+        const plan = {
+          projectName: path.basename(item.projectPath, ".csproj"),
+          projectPath: item.projectPath,
+          entries: [{ pkg: item.pkg, confidence: item.confidence, reason: item.pruneReason ?? "" }],
+        };
+        await runPruneFlow(packageProvider, plan, true);
+      }
+    ),
+    vscode.commands.registerCommand(
+      "dotnetprune.applyPrunePackage",
+      async (item: PackageTreeItem) => {
+        if (!item || !item.isUnused || !item.confidence || !item.projectPath) return;
+        if (item.confidence === "Blocked") {
+          vscode.window.showWarningMessage(
+            `DotNetPrune: ${item.pkg.include} is Blocked and cannot be removed automatically.`
+          );
+          return;
+        }
+        const plan = {
+          projectName: path.basename(item.projectPath, ".csproj"),
+          projectPath: item.projectPath,
+          entries: [{ pkg: item.pkg, confidence: item.confidence, reason: item.pruneReason ?? "" }],
+        };
+        await runPruneFlow(packageProvider, plan, false);
+        packageProvider.refresh();
+      }
+    ),
+    vscode.commands.registerCommand(
+      "dotnetprune.exportPruneReport",
+      async () => {
+        await exportLastPruneReport();
+      }
+    )
   );
 
   // Pass providers to tree provider
@@ -204,6 +272,128 @@ export function deactivate() {
   if (outputChannel) {
     outputChannel.dispose();
     outputChannel = undefined;
+  }
+}
+
+// ─── Phase 2: Prune Helpers ───────────────────────────────────────────────────
+
+/** Module-level storage for the last prune report (in-memory, resets on reload). */
+let lastPruneReport: import("./pruneExecutor").PruneReport | undefined;
+
+import type { ProjectPrunePlan } from "./packageInventory";
+
+/**
+ * Run a prune flow for a given plan. In dry-run mode only shows what would
+ * happen. In apply mode asks for confirmation before executing.
+ */
+async function runPruneFlow(
+  packageProvider: PackageInventoryProvider,
+  plan: ProjectPrunePlan,
+  dryRun: boolean
+): Promise<void> {
+  const pruneable = plan.entries.filter((e) => e.confidence !== "Blocked");
+  const blocked = plan.entries.filter((e) => e.confidence === "Blocked");
+
+  if (pruneable.length === 0) {
+    vscode.window.showInformationMessage(
+      `DotNetPrune: No pruneable packages for ${plan.projectName} — all are Blocked or allowlisted.`
+    );
+    return;
+  }
+
+  const cfg = getConfig();
+  const outputChannel = packageProvider.getOutputChannel();
+  outputChannel.show(false);
+
+  if (dryRun) {
+    // Show dry-run preview
+    outputChannel.appendLine(`\n[DRY-RUN] Prune preview for ${plan.projectName}:`);
+    for (const entry of pruneable) {
+      outputChannel.appendLine(
+        `  - ${entry.pkg.include}${entry.pkg.version ? ` (${entry.pkg.version})` : ""} [${entry.confidence}]: ${entry.reason}`
+      );
+    }
+    if (blocked.length > 0) {
+      outputChannel.appendLine(`  Skipped (Blocked): ${blocked.map((e) => e.pkg.include).join(", ")}`);
+    }
+    outputChannel.appendLine(`  Total: ${pruneable.length} would be removed, ${blocked.length} skipped.`);
+
+    const executor = new PruneExecutor(outputChannel, true);
+    const outcome = await executor.executeProjectPlan(
+      { ...plan, entries: plan.entries },
+      { runRestore: false, runBuild: false }
+    );
+    lastPruneReport = PruneExecutor.buildReport([outcome], true);
+    outputChannel.appendLine(PruneExecutor.formatReportSummary(lastPruneReport));
+    return;
+  }
+
+  // Apply: require confirmation
+  const packageList = pruneable
+    .map((e) => `• ${e.pkg.include}${e.pkg.version ? ` (${e.pkg.version})` : ""} [${e.confidence}]`)
+    .join("\n");
+  const confirmMessage = `Remove ${pruneable.length} package(s) from ${plan.projectName}?\n\n${packageList}`;
+  const confirmed = await vscode.window.showWarningMessage(
+    confirmMessage,
+    { modal: true },
+    "Yes, Remove"
+  );
+  if (confirmed !== "Yes, Remove") return;
+
+  const executor = new PruneExecutor(outputChannel, false);
+  const outcome = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `DotNetPrune: Pruning ${plan.projectName}...`,
+      cancellable: false,
+    },
+    async () =>
+      executor.executeProjectPlan(plan, {
+        runRestore: cfg.prune.runRestoreAfterPrune,
+        runBuild: cfg.prune.runBuildAfterPrune,
+      })
+  );
+
+  lastPruneReport = PruneExecutor.buildReport([outcome], false);
+  const summary = PruneExecutor.formatReportSummary(lastPruneReport);
+  outputChannel.appendLine(summary);
+
+  const removed = outcome.packages.filter((p) => p.status === "removed").length;
+  const failed = outcome.packages.filter((p) => p.status === "failed").length;
+
+  if (failed > 0) {
+    vscode.window.showWarningMessage(
+      `DotNetPrune: Pruned ${removed} package(s) with ${failed} failure(s). See Output for details.`
+    );
+  } else {
+    vscode.window.showInformationMessage(
+      `DotNetPrune: Removed ${removed} package(s) from ${plan.projectName}.`
+    );
+  }
+}
+
+/** Export the last prune report to a JSON file in the workspace root. */
+async function exportLastPruneReport(): Promise<void> {
+  if (!lastPruneReport) {
+    vscode.window.showInformationMessage(
+      "DotNetPrune: No prune report available. Run a preview or apply operation first."
+    );
+    return;
+  }
+  const filePath = await PruneExecutor.saveReport(lastPruneReport);
+  if (filePath) {
+    const open = await vscode.window.showInformationMessage(
+      `DotNetPrune: Report saved to ${filePath}`,
+      "Open File"
+    );
+    if (open === "Open File") {
+      const doc = await vscode.workspace.openTextDocument(filePath);
+      await vscode.window.showTextDocument(doc);
+    }
+  } else {
+    vscode.window.showErrorMessage(
+      "DotNetPrune: Failed to save prune report. Check that a workspace folder is open."
+    );
   }
 }
 

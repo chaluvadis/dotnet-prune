@@ -18,6 +18,7 @@ export type ProjectPackageInfo = {
   targetFrameworks: string[];
   unusedPackages: PackageReference[];
   referencedPackages: PackageReference[];
+  prunePlan?: ProjectPrunePlan;
 };
 
 export type SolutionInventory = {
@@ -25,6 +26,82 @@ export type SolutionInventory = {
   solutionName: string;
   projects: ProjectPackageInfo[];
 };
+
+// ─── Prune Planner Types ──────────────────────────────────────────────────────
+
+/** Confidence level for removing an unused package reference. */
+export type PruneConfidence = "High" | "Medium" | "Blocked";
+
+export type PackagePruneEntry = {
+  pkg: PackageReference;
+  confidence: PruneConfidence;
+  reason: string;
+};
+
+export type ProjectPrunePlan = {
+  projectName: string;
+  projectPath: string;
+  entries: PackagePruneEntry[];
+};
+
+// ─── Allowlist Parser ─────────────────────────────────────────────────────────
+
+type AllowlistConfig = {
+  allowlist: string[];
+};
+
+/** Reads the `.dotnet-prune.json` allowlist from the workspace root. */
+export class AllowlistParser {
+  static load(workspacePath: string): Set<string> {
+    const allowlistPath = path.join(workspacePath, ".dotnet-prune.json");
+    try {
+      if (!fs.existsSync(allowlistPath)) return new Set();
+      const raw = fs.readFileSync(allowlistPath, "utf-8");
+      const config = JSON.parse(raw) as AllowlistConfig;
+      if (Array.isArray(config.allowlist)) {
+        return new Set(config.allowlist.map((s) => s.toLowerCase()));
+      }
+    } catch {
+      // ignore missing/invalid files
+    }
+    return new Set();
+  }
+}
+
+// ─── Prune Planner ────────────────────────────────────────────────────────────
+
+/** Classifies unused package references by prune confidence. */
+export class PrunePlanner {
+  static classifyPackage(
+    pkg: PackageReference,
+    allowlist: Set<string>
+  ): { confidence: PruneConfidence; reason: string } {
+    if (allowlist.has(pkg.include.toLowerCase())) {
+      return { confidence: "Blocked", reason: "Package is in the allowlist" };
+    }
+    if (pkg.condition) {
+      return {
+        confidence: "Medium",
+        reason: `Conditional dependency (${pkg.condition}) — removal may break specific build configurations`,
+      };
+    }
+    if (pkg.includeAssets && pkg.includeAssets.toLowerCase() !== "all") {
+      return {
+        confidence: "Medium",
+        reason: `Non-default IncludeAssets (${pkg.includeAssets}) — usage pattern may be indirect`,
+      };
+    }
+    return { confidence: "High", reason: "No references found in source files" };
+  }
+
+  static buildPlan(projectInfo: ProjectPackageInfo, allowlist: Set<string>): ProjectPrunePlan {
+    const entries: PackagePruneEntry[] = projectInfo.unusedPackages.map((pkg) => {
+      const { confidence, reason } = this.classifyPackage(pkg, allowlist);
+      return { pkg, confidence, reason };
+    });
+    return { projectName: projectInfo.projectName, projectPath: projectInfo.projectPath, entries };
+  }
+}
 
 // ─── Solution Parser ──────────────────────────────────────────────────────────
 
@@ -311,8 +388,17 @@ export class PackageGroupTreeItem extends PkgTreeItemBase {
         ? `Unused Package References (${count})`
         : `Referenced Packages (${count})`;
     super(label, state);
-    this.contextValue =
-      groupType === "unused" ? "pkg-group-unused" : "pkg-group-referenced";
+
+    // For unused groups: set context value based on whether any entries are pruneable
+    if (groupType === "unused") {
+      const hasPruneable = projectInfo.prunePlan?.entries.some(
+        (e) => e.confidence !== "Blocked"
+      );
+      this.contextValue = hasPruneable ? "pkg-group-unused-pruneable" : "pkg-group-unused";
+    } else {
+      this.contextValue = "pkg-group-referenced";
+    }
+
     this.iconPath =
       groupType === "unused"
         ? new vscode.ThemeIcon("warning")
@@ -324,17 +410,40 @@ export class PackageTreeItem extends PkgTreeItemBase {
   constructor(
     public readonly pkg: PackageReference,
     public readonly isUnused: boolean,
-    state: vscode.TreeItemCollapsibleState
+    state: vscode.TreeItemCollapsibleState,
+    public readonly confidence?: PruneConfidence,
+    public readonly pruneReason?: string,
+    public readonly projectPath?: string
   ) {
     super(pkg.include, state);
-    this.contextValue = isUnused ? "pkg-unused" : "pkg-referenced";
-    this.iconPath = new vscode.ThemeIcon("package");
+
+    if (isUnused && confidence) {
+      this.contextValue =
+        confidence === "High"
+          ? "pkg-unused-high"
+          : confidence === "Medium"
+          ? "pkg-unused-medium"
+          : "pkg-unused-blocked";
+      const icon =
+        confidence === "High"
+          ? "trash"
+          : confidence === "Medium"
+          ? "question"
+          : "lock";
+      this.iconPath = new vscode.ThemeIcon(icon);
+    } else {
+      this.contextValue = isUnused ? "pkg-unused" : "pkg-referenced";
+      this.iconPath = new vscode.ThemeIcon("package");
+    }
+
     this.description = pkg.version ?? "";
     const details: string[] = [];
     if (pkg.version) details.push(`Version: ${pkg.version}`);
     if (pkg.privateAssets) details.push(`PrivateAssets: ${pkg.privateAssets}`);
     if (pkg.includeAssets) details.push(`IncludeAssets: ${pkg.includeAssets}`);
     if (pkg.condition) details.push(`Condition: ${pkg.condition}`);
+    if (confidence) details.push(`Confidence: ${confidence}`);
+    if (pruneReason) details.push(`Reason: ${pruneReason}`);
     this.tooltip = details.join("\n") || pkg.include;
   }
 }
@@ -368,19 +477,35 @@ export class PackageInventoryProvider
   private inventories: SolutionInventory[] = [];
   private isAnalysisRunning = false;
   private outputChannel: vscode.OutputChannel | undefined;
+  private lastAllowlist: Set<string> = new Set();
 
   constructor(_context: vscode.ExtensionContext) {}
+
+  /** Returns the output channel, creating it if necessary. */
+  getOutputChannel(): vscode.OutputChannel {
+    if (!this.outputChannel) {
+      this.outputChannel = vscode.window.createOutputChannel("DotNetPrune");
+    }
+    return this.outputChannel;
+  }
+
+  /** Returns a copy of the current inventories. */
+  getInventories(): SolutionInventory[] {
+    return this.inventories.slice();
+  }
+
+  /** Returns the allowlist used in the last analysis. */
+  getAllowlist(): Set<string> {
+    return new Set(this.lastAllowlist);
+  }
 
   private log(
     text: string,
     level: "error" | "warn" | "info" | "debug" = "info"
   ): void {
-    if (!this.outputChannel) {
-      this.outputChannel = vscode.window.createOutputChannel("DotNetPrune");
-    }
-    this.outputChannel.appendLine(`[${level.toUpperCase()}] ${text}`);
+    this.getOutputChannel().appendLine(`[${level.toUpperCase()}] ${text}`);
     if (level === "error" || level === "warn") {
-      this.outputChannel.show(true);
+      this.getOutputChannel().show(true);
     }
   }
 
@@ -478,12 +603,36 @@ export class PackageInventoryProvider
           ),
         ]);
       }
+
+      if (element.groupType === "unused") {
+        // Build a lookup map from pkg.include → prune entry for O(1) confidence lookup
+        const planMap = new Map<string, PackagePruneEntry>();
+        if (element.projectInfo.prunePlan) {
+          for (const entry of element.projectInfo.prunePlan.entries) {
+            planMap.set(entry.pkg.include, entry);
+          }
+        }
+        return Promise.resolve(
+          packages.map((pkg) => {
+            const entry = planMap.get(pkg.include);
+            return new PackageTreeItem(
+              pkg,
+              true,
+              vscode.TreeItemCollapsibleState.None,
+              entry?.confidence,
+              entry?.reason,
+              element.projectInfo.projectPath
+            );
+          })
+        );
+      }
+
       return Promise.resolve(
         packages.map(
           (pkg) =>
             new PackageTreeItem(
               pkg,
-              element.groupType === "unused",
+              false,
               vscode.TreeItemCollapsibleState.None
             )
         )
@@ -609,6 +758,15 @@ export class PackageInventoryProvider
     );
     this.log(`Analyzing solution: ${solutionName}`, "info");
 
+    // Load allowlist from workspace root
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    const workspaceRoot = workspaceFolders?.[0]?.uri.fsPath ?? path.dirname(solutionPath);
+    const allowlist = AllowlistParser.load(workspaceRoot);
+    this.lastAllowlist = allowlist;
+    if (allowlist.size > 0) {
+      this.log(`Allowlist loaded: ${Array.from(allowlist).join(", ")}`, "info");
+    }
+
     const projectPaths = SolutionParser.getProjectPaths(solutionPath);
     this.log(
       `Found ${projectPaths.length} project(s) in ${solutionName}`,
@@ -625,13 +783,20 @@ export class PackageInventoryProvider
         const { unusedPackages, referencedPackages } =
           PackageUsageAnalyzer.analyzeProject(projectPath, packages);
 
-        projects.push({
+        const projectInfo: ProjectPackageInfo = {
           projectName,
           projectPath,
           targetFrameworks,
           unusedPackages,
           referencedPackages,
-        });
+        };
+
+        // Build prune plan for unused packages (Phase 2)
+        if (unusedPackages.length > 0) {
+          projectInfo.prunePlan = PrunePlanner.buildPlan(projectInfo, allowlist);
+        }
+
+        projects.push(projectInfo);
 
         this.log(
           `  ${projectName}: ${packages.length} package(s) — ${unusedPackages.length} unused, ${referencedPackages.length} referenced`,

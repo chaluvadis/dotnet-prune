@@ -42,7 +42,12 @@
     "onCommand:dotnetprune.copyProjectName",
     "onCommand:dotnetprune.analyzePackages",
     "onCommand:dotnetprune.refreshPackages",
-    "onCommand:dotnetprune.clearPackages"
+    "onCommand:dotnetprune.clearPackages",
+    "onCommand:dotnetprune.previewPruneProject",
+    "onCommand:dotnetprune.applyPruneProject",
+    "onCommand:dotnetprune.previewPrunePackage",
+    "onCommand:dotnetprune.applyPrunePackage",
+    "onCommand:dotnetprune.exportPruneReport"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -124,6 +129,31 @@
       {
         "command": "dotnetprune.clearPackages",
         "title": "$(clear-all) Clear",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.previewPruneProject",
+        "title": "$(eye) Preview Prune",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.applyPruneProject",
+        "title": "$(trash) Apply Prune",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.previewPrunePackage",
+        "title": "$(eye) Preview Remove",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.applyPrunePackage",
+        "title": "$(trash) Remove Package",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.exportPruneReport",
+        "title": "$(export) Export Prune Report",
         "category": "DotNetPrune"
       }
     ],
@@ -251,6 +281,21 @@
           "enum": ["off", "error", "warn", "info", "debug"],
           "default": "info",
           "description": "Log verbosity level for the DotNetPrune output channel"
+        },
+        "dotnetprune.prune.runRestoreAfterPrune": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run `dotnet restore` after applying a prune operation to validate the project still restores cleanly"
+        },
+        "dotnetprune.prune.runBuildAfterPrune": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run `dotnet build` after applying a prune operation to validate the project still compiles"
+        },
+        "dotnetprune.prune.allowlistPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a `.dotnet-prune.json` allowlist file. Leave empty to use `<workspaceRoot>/.dotnet-prune.json`"
         }
       }
     },
@@ -328,6 +373,11 @@
           "command": "dotnetprune.clearPackages",
           "when": "view == dotnetprune-packages",
           "group": "navigation@3"
+        },
+        {
+          "command": "dotnetprune.exportPruneReport",
+          "when": "view == dotnetprune-packages",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -350,6 +400,26 @@
           "command": "dotnetprune.deleteFinding",
           "when": "view == dotnetprune-findings && viewItem == finding",
           "group": "2_workspace@2"
+        },
+        {
+          "command": "dotnetprune.previewPruneProject",
+          "when": "view == dotnetprune-packages && viewItem =~ /^pkg-group-unused/",
+          "group": "1_prune@1"
+        },
+        {
+          "command": "dotnetprune.applyPruneProject",
+          "when": "view == dotnetprune-packages && viewItem == pkg-group-unused-pruneable",
+          "group": "1_prune@2"
+        },
+        {
+          "command": "dotnetprune.previewPrunePackage",
+          "when": "view == dotnetprune-packages && viewItem =~ /^pkg-unused-(high|medium)$/",
+          "group": "1_prune@1"
+        },
+        {
+          "command": "dotnetprune.applyPrunePackage",
+          "when": "view == dotnetprune-packages && viewItem =~ /^pkg-unused-(high|medium)$/",
+          "group": "1_prune@2"
         }
       ]
     }
