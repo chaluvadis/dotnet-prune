@@ -1,5 +1,7 @@
 import * as assert from 'assert';
 import * as path from 'node:path';
+import * as os from 'node:os';
+import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import { getConfig } from '../config';
 import { FindingFilter } from '../filter';
@@ -9,7 +11,10 @@ import {
 	CsprojParser,
 	PackageUsageAnalyzer,
 	AllowlistParser,
+	AllowlistWriter,
+	CsprojNavigator,
 	PrunePlanner,
+	PackageInventoryProvider,
 	type PackageReference,
 	type ProjectPackageInfo,
 } from '../packageInventory';
@@ -621,6 +626,135 @@ EndProject
 			assert.ok(summary.includes('MyProj'));
 			assert.ok(summary.includes('APPLIED'));
 			assert.ok(summary.includes('restore: success'));
+		});
+	});
+
+	// ─── Phase 3 Tests ────────────────────────────────────────────────────────────
+
+	suite('AllowlistWriter Tests', () => {
+		let tmpDir: string;
+
+		setup(() => {
+			tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dotnet-prune-test-'));
+		});
+
+		teardown(() => {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		});
+
+		test('Should create .dotnet-prune.json with one entry when file does not exist', () => {
+			AllowlistWriter.add(tmpDir, 'NewPackage');
+			const filePath = AllowlistWriter.getPath(tmpDir);
+			assert.ok(fs.existsSync(filePath));
+			const raw = fs.readFileSync(filePath, 'utf-8');
+			const cfg = JSON.parse(raw) as { allowlist: string[] };
+			assert.deepStrictEqual(cfg.allowlist, ['NewPackage']);
+		});
+
+		test('Should append to existing allowlist without duplicates', () => {
+			const filePath = AllowlistWriter.getPath(tmpDir);
+			fs.writeFileSync(filePath, JSON.stringify({ allowlist: ['ExistingPkg'] }, null, 2), 'utf-8');
+			AllowlistWriter.add(tmpDir, 'NewPackage');
+			const raw = fs.readFileSync(filePath, 'utf-8');
+			const cfg = JSON.parse(raw) as { allowlist: string[] };
+			assert.deepStrictEqual(cfg.allowlist, ['ExistingPkg', 'NewPackage']);
+		});
+
+		test('Should not add duplicate entries (case-insensitive)', () => {
+			AllowlistWriter.add(tmpDir, 'MyPackage');
+			AllowlistWriter.add(tmpDir, 'mypackage');
+			AllowlistWriter.add(tmpDir, 'MYPACKAGE');
+			const cfg = JSON.parse(fs.readFileSync(AllowlistWriter.getPath(tmpDir), 'utf-8')) as { allowlist: string[] };
+			assert.strictEqual(cfg.allowlist.length, 1);
+			assert.strictEqual(cfg.allowlist[0], 'MyPackage');
+		});
+
+		test('getPath should return workspace-relative .dotnet-prune.json path', () => {
+			const result = AllowlistWriter.getPath('/my/workspace');
+			assert.strictEqual(result, path.join('/my/workspace', '.dotnet-prune.json'));
+		});
+
+		test('Should handle corrupt JSON file gracefully by starting fresh', () => {
+			const filePath = AllowlistWriter.getPath(tmpDir);
+			fs.writeFileSync(filePath, '{invalid json}', 'utf-8');
+			AllowlistWriter.add(tmpDir, 'RecoveredPackage');
+			const cfg = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as { allowlist: string[] };
+			assert.deepStrictEqual(cfg.allowlist, ['RecoveredPackage']);
+		});
+
+		test('Should roundtrip through AllowlistParser after write', () => {
+			AllowlistWriter.add(tmpDir, 'Pkg.One');
+			AllowlistWriter.add(tmpDir, 'Pkg.Two');
+			const loaded = AllowlistParser.load(tmpDir);
+			assert.ok(loaded.has('pkg.one'));
+			assert.ok(loaded.has('pkg.two'));
+		});
+	});
+
+	suite('CsprojNavigator Tests', () => {
+		const csprojContent = `<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+    <PackageReference Include="Serilog" Version="2.10.0" />
+  </ItemGroup>
+</Project>`;
+
+		test('Should find line number of a known PackageReference', () => {
+			const line = CsprojNavigator.findPackageReferenceLine(csprojContent, 'Newtonsoft.Json');
+			assert.strictEqual(line, 2); // 0-based: line index 2
+		});
+
+		test('Should find line for second PackageReference', () => {
+			const line = CsprojNavigator.findPackageReferenceLine(csprojContent, 'Serilog');
+			assert.strictEqual(line, 3);
+		});
+
+		test('Should return undefined for a package not present', () => {
+			const line = CsprojNavigator.findPackageReferenceLine(csprojContent, 'NotPresent');
+			assert.strictEqual(line, undefined);
+		});
+
+		test('Should perform case-insensitive match on package name', () => {
+			const line = CsprojNavigator.findPackageReferenceLine(csprojContent, 'newtonsoft.json');
+			assert.strictEqual(line, 2);
+		});
+
+		test('Should return undefined for empty content', () => {
+			const line = CsprojNavigator.findPackageReferenceLine('', 'AnyPackage');
+			assert.strictEqual(line, undefined);
+		});
+	});
+
+	suite('PackageInventoryProvider Confidence Filter Tests', () => {
+		let provider: PackageInventoryProvider;
+
+		setup(() => {
+			// Create a minimal fake ExtensionContext
+			const fakeContext = {} as vscode.ExtensionContext;
+			provider = new PackageInventoryProvider(fakeContext);
+		});
+
+		test('Default confidence filter should be "All"', () => {
+			assert.strictEqual(provider.getConfidenceFilter(), 'All');
+		});
+
+		test('setConfidenceFilter should update the filter', () => {
+			provider.setConfidenceFilter('High');
+			assert.strictEqual(provider.getConfidenceFilter(), 'High');
+		});
+
+		test('setConfidenceFilter to "All" should clear the filter', () => {
+			provider.setConfidenceFilter('High');
+			provider.setConfidenceFilter('All');
+			assert.strictEqual(provider.getConfidenceFilter(), 'All');
+		});
+
+		test('getLastSolutionPath should be undefined before first analysis', () => {
+			assert.strictEqual(provider.getLastSolutionPath(), undefined);
+		});
+
+		test('getInventories should return empty array initially', () => {
+			assert.deepStrictEqual(provider.getInventories(), []);
 		});
 	});
 });
