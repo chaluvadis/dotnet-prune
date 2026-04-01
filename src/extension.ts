@@ -5,6 +5,34 @@ import { spawn } from "node:child_process";
 
 let outputChannel: vscode.OutputChannel | undefined;
 
+const LOG_LEVELS: Record<string, number> = {
+  debug: 0,
+  info: 1,
+  warning: 2,
+  error: 3,
+};
+
+const getLogLevel = (): number => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  const level = config.get<string>("logLevel", "info");
+  return LOG_LEVELS[level] ?? LOG_LEVELS.info;
+};
+
+const getMaxFindings = (): number => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<number>("maxFindings", 1000);
+};
+
+const getAnalyzerPath = (): string | undefined => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<string>("analyzerPath", "");
+};
+
+const getAutoRefreshOnSave = (): boolean => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<boolean>("autoRefreshOnSave", false);
+};
+
 type Finding = {
   Project: string;
   Solution?: string;
@@ -52,7 +80,7 @@ export function activate(context: vscode.ExtensionContext) {
       async (item: FileTreeItem) => {
         if (!item || !item.filePath) return;
         await vscode.env.clipboard.writeText(item.filePath);
-        vscode.window.showInformationMessage(`DotNetPrune: ${item.filePath} path copied to clipboard`);
+        const statusItem = vscode.window.setStatusBarMessage(`DotNetPrune: ${item.filePath} path copied to clipboard`, 3000);
       }
     ),
     vscode.commands.registerCommand(
@@ -60,7 +88,7 @@ export function activate(context: vscode.ExtensionContext) {
       async (item: ProjectTreeItem) => {
         if (!item || !item.label) return;
         await vscode.env.clipboard.writeText(item.label);
-        vscode.window.showInformationMessage(`DotNetPrune: ${item.label} name copied to clipboard`);
+        const statusItem = vscode.window.setStatusBarMessage(`DotNetPrune: ${item.label} name copied to clipboard`, 3000);
       }
     )
   );
@@ -141,8 +169,21 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     new Map();
   private solutionFiles: Map<string, string> = new Map(); // solutionName -> solutionFilePath
   private projectToSolutionMap: Map<string, string> = new Map(); // projectName -> solutionName
+  private isAnalysisRunning: boolean = false;
 
-  constructor(private context: vscode.ExtensionContext) { }
+  constructor(private context: vscode.ExtensionContext) {
+    this.setupAutoRefresh();
+  }
+
+  private setupAutoRefresh(): void {
+    if (getAutoRefreshOnSave()) {
+      this.context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument(() => {
+          this.refresh();
+        })
+      );
+    }
+  }
 
   refresh(): void {
     this.runAnalysisAndRefresh(true).catch((err) => {
@@ -162,13 +203,28 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   async runAnalysisAndRefresh(silent: boolean = false): Promise<void> {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) {
-      vscode.window.showErrorMessage(
-        "DotNetPrune: Open a workspace before running analysis."
+    if (!vscode.workspace.isTrusted) {
+      vscode.window.showWarningMessage(
+        "DotNetPrune: Workspace is not trusted. Please enable trust to run analysis."
       );
+      this.appendToOutput("DotNetPrune: Workspace is not trusted. Analysis aborted.", "warning");
       return;
     }
+
+    if (this.isAnalysisRunning) {
+      vscode.window.showWarningMessage("DotNetPrune: Analysis already in progress.");
+      return;
+    }
+
+    this.isAnalysisRunning = true;
+    try {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (!workspaceFolders || workspaceFolders.length === 0) {
+        vscode.window.showErrorMessage(
+          "DotNetPrune: Open a workspace before running analysis."
+        );
+        return;
+      }
 
     // discover solution/csproj files (excluding build folders)
     const excludedFolders = "**/{bin,debug,obj,release,nuget,bin/**,debug/**,obj/**,release/**,nuget/**}/**";
@@ -268,12 +324,20 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
             try {
               // Check exit code - code 1 means findings detected (success), other codes are errors
               if (code !== 0 && code !== 1) {
-                throw new Error(`Analyzer exited with code ${code}`);
+                const errorMsg = `Analyzer exited with code ${code}. Check Output panel for details.`;
+                const openOutputBtn = "Open Output";
+                this.appendToOutput(`Analyzer exited with code ${code}. stderr: ${stderr}`, "error");
+                vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`, openOutputBtn).then((selection) => {
+                  if (selection === openOutputBtn) {
+                    this.appendToOutput(`Full stderr: ${stderr}`, "debug");
+                  }
+                });
+                throw new Error(errorMsg);
               }
 
               // Log stderr if present
               if (stderr && stderr.trim().length > 0) {
-                this.appendToOutput(stderr);
+                this.appendToOutput(stderr, "warning");
               }
 
               // Parse JSON from stdout - expect clean JSON array
@@ -312,17 +376,41 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
               resolve(true);
             } catch (error: any) {
               const errorMsg = `Failed to parse analyzer output: ${error.message}`;
-              vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`);
-              this.appendToOutput(errorMsg);
-              this.appendToOutput(`Raw stdout: ${stdout.substring(0, 1000)}`);
+              const openOutputBtn = "Open Output";
+              vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`, openOutputBtn).then((selection) => {
+                if (selection === openOutputBtn) {
+                  this.appendToOutput(`Raw stdout: ${stdout.substring(0, 1000)}`, "debug");
+                }
+              });
+              this.appendToOutput(errorMsg, "error");
+              this.appendToOutput(`Raw stdout: ${stdout.substring(0, 1000)}`, "debug");
               resolve(false);
             }
           });
 
           child.on("error", (error: Error) => {
-            const errorMsg = `Failed to execute analyzer: ${error.message}`;
-            vscode.window.showErrorMessage(`DotNetPrune: ${errorMsg}`);
-            this.appendToOutput(errorMsg);
+            let errorMsg: string;
+            let errorLevel: "error" | "warning" = "error";
+            
+            if (error.message.includes("ENOENT")) {
+              errorMsg = "DotNetPrune: .NET runtime not found. Install .NET SDK and restart VS Code.";
+            } else if (error.message.includes("ETIMEDOUT") || error.message.includes("timeout")) {
+              errorMsg = "DotNetPrune: Analysis timed out. Try with a smaller project.";
+              errorLevel = "warning";
+            } else {
+              errorMsg = `Failed to execute analyzer: ${error.message}`;
+            }
+            
+            vscode.window.showErrorMessage(errorMsg);
+            this.appendToOutput(errorMsg, errorLevel);
+            if (errorLevel === "warning") {
+              const openOutputBtn = "Open Output";
+              vscode.window.showWarningMessage(errorMsg, openOutputBtn).then((selection) => {
+                if (selection === openOutputBtn) {
+                  this.appendToOutput(`Full error: ${error.message}`, "debug");
+                }
+              });
+            }
             resolve(false);
           });
         });
@@ -338,9 +426,16 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
     // Open the DotNetPrune view to show the findings
     vscode.commands.executeCommand("workbench.view.dotnetprune-views");
+    } finally {
+      this.isAnalysisRunning = false;
+    }
   }
 
   private getDllPath(): string {
+    const customPath = getAnalyzerPath();
+    if (customPath && fs.existsSync(customPath)) {
+      return customPath;
+    }
     const extensionPath = this.context.extensionPath;
     return path.join(extensionPath, "dist", "FindUnused", "FindUnused.dll");
   }
@@ -548,7 +643,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         return dotNetFiles.includes(ext);
       });
 
-    this.findings = mapped;
+    this.findings = mapped.slice(0, getMaxFindings());
     this.groupedBySolution.clear();
 
     // Organize findings by Solution -> Project -> File
@@ -802,12 +897,18 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     }
   }
 
-  private appendToOutput(text: string) {
+  private appendToOutput(text: string, level: "debug" | "info" | "warning" | "error" = "info") {
+    const messageLevel = LOG_LEVELS[level] ?? LOG_LEVELS.info;
+    if (messageLevel < getLogLevel()) {
+      return;
+    }
     if (!outputChannel) {
       outputChannel = vscode.window.createOutputChannel("DotNetPrune");
     }
     outputChannel.appendLine(text);
-    outputChannel.show(true);
+    if (messageLevel >= LOG_LEVELS.warning) {
+      outputChannel.show(true);
+    }
   }
 
   getTreeItem(element: TreeItemBase): vscode.TreeItem {

@@ -20,7 +20,15 @@
   "categories": [
     "Linters"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:dotnetprune-findings",
+    "onCommand:dotnetprune.refresh",
+    "onCommand:dotnetprune.runAnalysis",
+    "onCommand:dotnetprune.clearFindings",
+    "onCommand:dotnetprune.openFinding",
+    "onCommand:dotnetprune.copyFilePath",
+    "onCommand:dotnetprune.copyProjectName"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -52,7 +60,34 @@
     "configuration": {
       "type": "object",
       "title": "DotNetPrune",
-      "properties": {}
+      "properties": {
+        "dotnetprune.autoRefreshOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically refresh findings when a file is saved"
+        },
+        "dotnetprune.maxFindings": {
+          "type": "number",
+          "default": 1000,
+          "description": "Maximum number of findings to display"
+        },
+        "dotnetprune.excludeGlobs": {
+          "type": "array",
+          "default": [],
+          "description": "Glob patterns to exclude from analysis"
+        },
+        "dotnetprune.analyzerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a custom FindUnused analyzer DLL"
+        },
+        "dotnetprune.logLevel": {
+          "type": "string",
+          "default": "info",
+          "enum": ["debug", "info", "warning", "error"],
+          "description": "Logging level for output channel"
+        }
+      }
     },
     "viewsContainers": {
       "activitybar": [
