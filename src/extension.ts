@@ -33,6 +33,11 @@ const getAutoRefreshOnSave = (): boolean => {
   return config.get<boolean>("autoRefreshOnSave", false);
 };
 
+const getConfidenceLevel = (): string => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<string>("confidenceLevel", "all");
+};
+
 type Finding = {
   Project: string;
   Solution?: string;
@@ -89,6 +94,28 @@ export function activate(context: vscode.ExtensionContext) {
         if (!item || !item.label) return;
         await vscode.env.clipboard.writeText(item.label);
         const statusItem = vscode.window.setStatusBarMessage(`DotNetPrune: ${item.label} name copied to clipboard`, 3000);
+      }
+    ),
+    vscode.commands.registerCommand(
+      "dotnetprune.generateCleanupScript",
+      async (item: ProjectTreeItem | undefined) => {
+        if (!item) {
+          const selected = await vscode.window.showQuickPick(
+            Array.from(provider.getAllProjectNames()),
+            { placeHolder: "Select a project to generate cleanup script" }
+          );
+          if (!selected) return;
+          await provider.generateCleanupScript(selected);
+        } else {
+          await provider.generateCleanupScript(item.label as string);
+        }
+      }
+    ),
+    vscode.commands.registerCommand(
+      "dotnetprune.previewCode",
+      async (item: FindingTreeItem) => {
+        if (!item) return;
+        await provider.showCodePreview(item.finding);
       }
     )
   );
@@ -641,6 +668,22 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         const ext = path.extname(finding.FilePath).toLowerCase();
         const dotNetFiles = [".cs", ".sln", ".slnx", ".csproj"];
         return dotNetFiles.includes(ext);
+      })
+      .filter((finding: Finding) => {
+        // Filter by confidence level if configured
+        const level = getConfidenceLevel();
+        if (level === "all") return true;
+        
+        const confidence = finding.confidence ?? 100;
+        
+        if (level === "high") {
+          return confidence >= 80;
+        } else if (level === "medium") {
+          return confidence >= 50 && confidence < 80;
+        } else if (level === "low") {
+          return confidence < 50;
+        }
+        return true;
       });
 
     this.findings = mapped.slice(0, getMaxFindings());
@@ -908,6 +951,169 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     outputChannel.appendLine(text);
     if (messageLevel >= LOG_LEVELS.warning) {
       outputChannel.show(true);
+    }
+  }
+
+  getAllProjectNames(): Set<string> {
+    const projectNames = new Set<string>();
+    for (const [, projects] of this.groupedBySolution) {
+      for (const [projectName] of projects) {
+        projectNames.add(projectName);
+      }
+    }
+    return projectNames;
+  }
+
+  async generateCleanupScript(projectName: string): Promise<void> {
+    const projectFindings: Finding[] = [];
+    
+    for (const [, projects] of this.groupedBySolution) {
+      const files = projects.get(projectName);
+      if (files) {
+        for (const [, findings] of files) {
+          projectFindings.push(...findings);
+        }
+      }
+    }
+
+    if (projectFindings.length === 0) {
+      vscode.window.showInformationMessage(`DotNetPrune: No findings found for project "${projectName}"`);
+      return;
+    }
+
+    const scriptLines: string[] = [
+      "# DotNetPrune Cleanup Script",
+      `# Generated: ${new Date().toISOString()}`,
+      `# Project: ${projectName}`,
+      `# Total findings: ${projectFindings.length}`,
+      "",
+      "# NOTE: Review each item before running. Some items may be false positives.",
+      "# Generated code, tests, or reflection-based usage may appear unused.",
+      "",
+    ];
+
+    const fileMap = new Map<string, Finding[]>();
+    for (const f of projectFindings) {
+      const existing = fileMap.get(f.FilePath) || [];
+      existing.push(f);
+      fileMap.set(f.FilePath, existing);
+    }
+
+    for (const [filePath, findings] of fileMap) {
+      const relativePath = path.relative(getWorkspaceRootPath(), filePath);
+      scriptLines.push(`# File: ${relativePath}`);
+      
+      for (const f of findings) {
+        const line = f.Line > 0 ? f.Line : 1;
+        const kind = f.SymbolKind || "symbol";
+        const name = f.SymbolName || f.DisplayName || "unknown";
+        
+        if (f.ContainingType) {
+          scriptLines.push(`#   ${kind}: ${name} (line ${line}, in ${f.ContainingType})`);
+        } else {
+          scriptLines.push(`#   ${kind}: ${name} (line ${line})`);
+        }
+      }
+      scriptLines.push("");
+    }
+
+    scriptLines.push("# --- DELETE COMMANDS ---");
+    scriptLines.push("# Uncomment and run these commands to delete unused code:");
+    scriptLines.push("");
+
+    for (const [filePath, findings] of fileMap) {
+      const relativePath = path.relative(getWorkspaceRootPath(), filePath).replace(/\\/g, '/');
+      
+      for (const f of findings) {
+        const line = f.Line > 0 ? f.Line : 1;
+        scriptLines.push(`# Delete line ${line} in ${relativePath}`);
+      }
+    }
+
+    scriptLines.push("");
+    scriptLines.push("# --- REFACTORING SCRIPT ---");
+    scriptLines.push("# Alternative: Generate a C# script to remove unused members:");
+    scriptLines.push("");
+
+    for (const [filePath, findings] of fileMap) {
+      const relativePath = path.relative(getWorkspaceRootPath(), filePath).replace(/\\/g, '/');
+      scriptLines.push(`# In file: ${relativePath}`);
+      for (const f of findings) {
+        const name = f.SymbolName || f.DisplayName || "unknown";
+        const kind = f.SymbolKind?.toLowerCase() || "member";
+        
+        if (kind.includes("method") || kind.includes("function")) {
+          scriptLines.push(`#   Remove method: ${name}`);
+        } else if (kind.includes("property")) {
+          scriptLines.push(`#   Remove property: ${name}`);
+        } else if (kind.includes("field")) {
+          scriptLines.push(`#   Remove field: ${name}`);
+        } else if (kind.includes("class")) {
+          scriptLines.push(`#   Remove class: ${name}`);
+        } else if (kind.includes("interface")) {
+          scriptLines.push(`#   Remove interface: ${name}`);
+        } else if (kind.includes("enum")) {
+          scriptLines.push(`#   Remove enum member: ${name}`);
+        } else {
+          scriptLines.push(`#   Remove ${kind}: ${name}`);
+        }
+      }
+      scriptLines.push("");
+    }
+
+    const doc = await vscode.workspace.openTextDocument({
+      content: scriptLines.join("\n"),
+      language: "shell"
+    });
+    await vscode.window.showTextDocument(doc, {
+      viewColumn: vscode.ViewColumn.Beside,
+      preview: false
+    });
+    
+    vscode.window.setStatusBarMessage(`DotNetPrune: Cleanup script generated (${projectFindings.length} items)`, 5000);
+  }
+
+  async showCodePreview(f: Finding): Promise<void> {
+    if (!f || !f.FilePath) {
+      vscode.window.showWarningMessage("DotNetPrune: finding has no file path.");
+      return;
+    }
+
+    try {
+      const doc = await vscode.workspace.openTextDocument(f.FilePath);
+      const content = doc.getText();
+      const lines = content.split("\n");
+      
+      const centerLine = Math.max(0, f.Line > 0 ? f.Line - 1 : 0);
+      const startLine = Math.max(0, centerLine - 5);
+      const endLine = Math.min(lines.length - 1, centerLine + 10);
+      
+      let previewText = `# ${f.DisplayName || f.SymbolName || "Unknown"}\n`;
+      previewText += `# File: ${path.relative(getWorkspaceRootPath(), f.FilePath)}:${f.Line}\n`;
+      previewText += `# Kind: ${f.SymbolKind} | Type: ${f.ContainingType || "N/A"}\n`;
+      if (f.Remarks) {
+        previewText += `# Remarks: ${f.Remarks}\n`;
+      }
+      previewText += `# Confidence: ${f.confidence ?? "N/A"}\n`;
+      previewText += "\n---\n\n";
+
+      for (let i = startLine; i <= endLine; i++) {
+        const lineNum = (i + 1).toString().padStart(3, " ");
+        const marker = i === centerLine ? ">>>" : "   ";
+        previewText += `${lineNum} ${marker} ${lines[i]}\n`;
+      }
+
+      const previewDoc = await vscode.workspace.openTextDocument({
+        content: previewText,
+        language: "csharp"
+      });
+      
+      await vscode.window.showTextDocument(previewDoc, {
+        viewColumn: vscode.ViewColumn.Beside,
+        preview: true
+      });
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`DotNetPrune: failed to preview code: ${err.message || err}`);
     }
   }
 

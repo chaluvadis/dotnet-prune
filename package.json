@@ -27,7 +27,9 @@
     "onCommand:dotnetprune.clearFindings",
     "onCommand:dotnetprune.openFinding",
     "onCommand:dotnetprune.copyFilePath",
-    "onCommand:dotnetprune.copyProjectName"
+    "onCommand:dotnetprune.copyProjectName",
+    "onCommand:dotnetprune.generateCleanupScript",
+    "onCommand:dotnetprune.previewCode"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -55,6 +57,14 @@
       {
         "command": "dotnetprune.copyProjectName",
         "title": "Copy Project Name"
+      },
+      {
+        "command": "dotnetprune.generateCleanupScript",
+        "title": "DotNetPrune: Generate Cleanup Script"
+      },
+      {
+        "command": "dotnetprune.previewCode",
+        "title": "DotNetPrune: Preview Code"
       }
     ],
     "configuration": {
@@ -86,6 +96,12 @@
           "default": "info",
           "enum": ["debug", "info", "warning", "error"],
           "description": "Logging level for output channel"
+        },
+        "dotnetprune.confidenceLevel": {
+          "type": "string",
+          "default": "all",
+          "enum": ["all", "high", "medium", "low"],
+          "description": "Filter findings by confidence level (all, high>=80%, medium>=50%, low<50%)"
         }
       }
     },
@@ -118,6 +134,16 @@
           "command": "dotnetprune.copyProjectName",
           "when": "view == dotnetprune-findings && viewItem == project",
           "group": "7_modification@1"
+        },
+        {
+          "command": "dotnetprune.generateCleanupScript",
+          "when": "view == dotnetprune-findings && viewItem == project",
+          "group": "7_modification@2"
+        },
+        {
+          "command": "dotnetprune.previewCode",
+          "when": "view == dotnetprune-findings && viewItem == finding",
+          "group": "navigation@1"
         }
       ]
     }

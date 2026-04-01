@@ -43,4 +43,7 @@ public record Finding
 
     // Icon for quick visual identification
     public string Icon { get; set; } = string.Empty;
+
+    // Confidence score (0-100) - higher means more confident the code is truly unused
+    public int Confidence { get; set; } = 100;
 }
