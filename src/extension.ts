@@ -33,6 +33,16 @@ const getAutoRefreshOnSave = (): boolean => {
   return config.get<boolean>("autoRefreshOnSave", false);
 };
 
+const getExcludeGlobs = (): string[] => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<string[]>("excludeGlobs", []);
+};
+
+const getMinConfidence = (): number => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<number>("minConfidence", 0);
+};
+
 type Finding = {
   Project: string;
   Solution?: string;
@@ -157,6 +167,24 @@ const getWorkspaceRootPath = (): string => {
     return ".";
   }
   return workspaceFolders[0].uri.fsPath;
+};
+
+const matchesExcludeGlobs = (filePath: string, globs: string[]): boolean => {
+  if (globs.length === 0) return false;
+  const relativePath = path.relative(getWorkspaceRootPath(), filePath);
+  for (const glob of globs) {
+    if (glob.includes('*') || glob.includes('?')) {
+      const regex = new RegExp(
+        '^' + glob.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*').replace(/\?/g, '.') + '$'
+      );
+      if (regex.test(relativePath) || regex.test(filePath)) {
+        return true;
+      }
+    } else if (relativePath.includes(glob) || filePath.includes(glob)) {
+      return true;
+    }
+  }
+  return false;
 };
 
 class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
@@ -640,7 +668,21 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         // Only include findings from .NET-related files
         const ext = path.extname(finding.FilePath).toLowerCase();
         const dotNetFiles = [".cs", ".sln", ".slnx", ".csproj"];
-        return dotNetFiles.includes(ext);
+        if (!dotNetFiles.includes(ext)) return false;
+
+        // Filter out findings matching exclude globs
+        const excludeGlobs = getExcludeGlobs();
+        if (excludeGlobs.length > 0 && matchesExcludeGlobs(finding.FilePath, excludeGlobs)) {
+          return false;
+        }
+
+        // Filter by minimum confidence
+        const minConfidence = getMinConfidence();
+        if (minConfidence > 0 && (finding.confidence ?? 0) < minConfidence) {
+          return false;
+        }
+
+        return true;
       });
 
     this.findings = mapped.slice(0, getMaxFindings());

@@ -81,6 +81,13 @@
           "default": "",
           "description": "Path to a custom FindUnused analyzer DLL"
         },
+        "dotnetprune.minConfidence": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Minimum confidence level (0-100) to display findings"
+        },
         "dotnetprune.logLevel": {
           "type": "string",
           "default": "info",
