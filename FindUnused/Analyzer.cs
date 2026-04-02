@@ -15,6 +15,29 @@ public static class Analyzer
     private static AnalyzerConfiguration _config = new();
 
     /// <summary>
+    /// Enrich a finding with confidence and severity
+    /// </summary>
+    private static void EnrichFinding(Finding finding, ISymbol symbol, bool hasReferences = false)
+    {
+        var confidence = FindingMetrics.CalculateConfidence(
+            symbol,
+            finding.Accessibility,
+            finding.SymbolKind,
+            hasReferences);
+        
+        finding.confidence = confidence;
+        finding.severity = FindingMetrics.CalculateSeverity(
+            finding.Accessibility,
+            finding.SymbolKind,
+            confidence);
+        
+        if (string.IsNullOrEmpty(finding.Icon))
+        {
+            finding.Icon = FindingMetrics.GetIconForSymbolKind(finding.SymbolKind);
+        }
+    }
+
+    /// <summary>
     /// Analyze a single project for unused symbols
     /// </summary>
     public static async Task<List<Finding>> AnalyzeProjectAsync(
@@ -311,6 +334,7 @@ public static class Analyzer
                 Icon = icon,
                 Confidence = CalculateConfidence(SymbolKindMethod, method.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), method.ExplicitInterfaceImplementations.Any())
             });
+            EnrichFinding(findings[^1], method, false);
             progress?.Report($"    Unused method: {type.ToDisplayString()}.{method.Name} [{method.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
         // Analyze method parameters
@@ -386,6 +410,7 @@ public static class Analyzer
                     Icon = icon,
                     Confidence = CalculateConfidence("parameter", method.DeclaredAccessibility.ToString(), true, IsInTestFile(doc?.SyntaxTree), false)
                 });
+                EnrichFinding(findings[^1], param, false);
                 progress?.Report($"      Unused parameter: {method.ToDisplayString()} :: {param.Name} at {filePathDisplay}:{pline}");
             }
         }
@@ -464,6 +489,7 @@ public static class Analyzer
                 Icon = icon,
                 Confidence = CalculateConfidence("property", prop.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), prop.ExplicitInterfaceImplementations.Any())
             });
+            EnrichFinding(findings[^1], prop, false);
             progress?.Report($"    Unused property: {type.ToDisplayString()}.{prop.Name} [{prop.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
         return (findings, referenced);
@@ -540,6 +566,7 @@ public static class Analyzer
                 Icon = icon,
                 Confidence = CalculateConfidence("field", field.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), false)
             });
+            EnrichFinding(findings[^1], field, false);
             progress?.Report($"    Unused field: {type.ToDisplayString()}.{field.Name} [{field.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
         return (findings, referenced);
@@ -646,6 +673,7 @@ public static class Analyzer
                 Icon = icon,
                 Confidence = CalculateConfidence(kind, type.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), false)
             });
+            EnrichFinding(findings[^1], type, false);
             progress?.Report($"    Unused type: {type.ToDisplayString()} (Kind={kind}) [{type.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
 
