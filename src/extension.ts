@@ -174,6 +174,9 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("dotnetprune.clearFilters", () => {
       provider.clearFilters();
     }),
+    vscode.commands.registerCommand("dotnetprune.toggleGroupByType", () => {
+      provider.toggleGroupByType();
+    }),
     // Export command
     vscode.commands.registerCommand("dotnetprune.exportFindings", async () => {
       await exporter.exportFindings(provider.getAllFindings());
@@ -667,6 +670,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   private codeActionsProvider?: CodeActionsProvider;
   private decorator?: InlineDecorator;
   private isAnalysisRunning = false; // Run-lock to prevent overlapping analysis
+  private groupByType: boolean = false; // Group findings by containing type
 
   constructor(private context: vscode.ExtensionContext) {
     // Load ignored findings from workspace state
@@ -1585,10 +1589,26 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       }
 
       const filesMap = projectsMap.get(projectName)!;
-      const fileKey = f.FilePath || "(generated)";
-      if (!filesMap.has(fileKey)) filesMap.set(fileKey, []);
-      filesMap.get(fileKey)!.push(f);
+
+      if (this.groupByType && f.ContainingType) {
+        const typeKey = f.ContainingType;
+        if (!filesMap.has(typeKey)) filesMap.set(typeKey, []);
+        filesMap.get(typeKey)!.push(f);
+      } else {
+        const fileKey = f.FilePath || "(generated)";
+        if (!filesMap.has(fileKey)) filesMap.set(fileKey, []);
+        filesMap.get(fileKey)!.push(f);
+      }
     }
+  }
+
+  toggleGroupByType(): void {
+    this.groupByType = !this.groupByType;
+    this.rebuildGroupedStructure();
+    this._onDidChangeTreeData.fire(undefined);
+    vscode.window.showInformationMessage(
+      `DotNetPrune: Group by type ${this.groupByType ? "enabled" : "disabled"}`
+    );
   }
 
   private updateIntegrations(): void {
