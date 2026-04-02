@@ -1262,7 +1262,7 @@ class FindingTreeItem extends TreeItemBase {
   ) {
     super(label, state);
     this.contextValue = "finding";
-    // Use symbol kind icon, and incorporate analyzer icon into label if provided
+    // Use symbol kind icon, and incorporate analyzer icon into the label if provided
     this.iconPath = getIconForSymbolKind(finding.SymbolKind);
     if (finding.Icon) {
       this.label = `${finding.Icon} ${label}`;
