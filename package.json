@@ -27,7 +27,9 @@
     "onCommand:dotnetprune.clearFindings",
     "onCommand:dotnetprune.openFinding",
     "onCommand:dotnetprune.copyFilePath",
-    "onCommand:dotnetprune.copyProjectName"
+    "onCommand:dotnetprune.copyProjectName",
+    "onCommand:dotnetprune.deleteFindings",
+    "onCommand:dotnetprune.generateCleanupScript"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -93,6 +95,11 @@
           "default": "info",
           "enum": ["debug", "info", "warning", "error"],
           "description": "Logging level for output channel"
+        },
+        "dotnetprune.analysisTimeout": {
+          "type": "number",
+          "default": 300000,
+          "description": "Timeout for analysis in milliseconds (default: 300000ms = 5 minutes)"
         }
       }
     },
@@ -125,6 +132,11 @@
           "command": "dotnetprune.copyProjectName",
           "when": "view == dotnetprune-findings && viewItem == project",
           "group": "7_modification@1"
+        },
+        {
+          "command": "dotnetprune.generateCleanupScript",
+          "when": "view == dotnetprune-findings && viewItem == finding",
+          "group": "7_modification@2"
         }
       ]
     }
