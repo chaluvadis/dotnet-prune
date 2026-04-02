@@ -632,6 +632,24 @@ const getWorkspaceRootPath = (): string => {
   return workspaceFolders[0].uri.fsPath;
 };
 
+const matchesExcludeGlobs = (filePath: string, globs: string[]): boolean => {
+  if (globs.length === 0) return false;
+  const relativePath = path.relative(getWorkspaceRootPath(), filePath);
+  for (const glob of globs) {
+    if (glob.includes('*') || glob.includes('?')) {
+      const regex = new RegExp(
+        '^' + glob.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*').replace(/\?/g, '.') + '$'
+      );
+      if (regex.test(relativePath) || regex.test(filePath)) {
+        return true;
+      }
+    } else if (relativePath.includes(glob) || filePath.includes(glob)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   private _onDidChangeTreeData: vscode.EventEmitter<TreeItemBase | undefined> =
     new vscode.EventEmitter<TreeItemBase | undefined>();

@@ -333,6 +333,13 @@
           "default": "",
           "description": "Custom path to the FindUnused analyzer DLL. Leave empty to use the bundled analyzer."
         },
+        "dotnetprune.minConfidence": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Minimum confidence level (0-100) to display findings"
+        },
         "dotnetprune.logLevel": {
           "type": "string",
           "enum": [
