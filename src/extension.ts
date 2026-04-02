@@ -75,6 +75,7 @@ export function activate(context: vscode.ExtensionContext) {
   const treeView = vscode.window.createTreeView("dotnetprune-findings", {
     treeDataProvider: provider,
     showCollapseAll: true,
+    canSelectMany: true,
   });
 
   // Package inventory view (Phase 1 read-only)
@@ -147,9 +148,7 @@ export function activate(context: vscode.ExtensionContext) {
         );
       }
     ),
-    vscode.commands.registerCommand(
-      "dotnetprune.copyProjectName",
-      async (item: ProjectTreeItem) => {
+    vscode.commands.registerCommand("dotnetprune.copyProjectName", async (item: ProjectTreeItem) => {
         if (!item || !item.label) return;
         await vscode.env.clipboard.writeText(item.label);
         vscode.window.setStatusBarMessage(
