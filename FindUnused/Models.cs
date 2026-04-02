@@ -43,4 +43,10 @@ public record Finding
 
     // Icon for quick visual identification
     public string Icon { get; set; } = string.Empty;
+
+    // Confidence level (0-100) indicating how certain we are this is unused
+    public int? confidence { get; set; }
+
+    // Severity level for diagnostics
+    public string? severity { get; set; } // "error", "warning", "information", "hint"
 }

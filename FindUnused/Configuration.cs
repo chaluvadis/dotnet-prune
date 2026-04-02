@@ -10,6 +10,21 @@ public class AnalyzerConfiguration
     public bool ExcludeGeneratedCode { get; set; } = true;
 
     /// <summary>
+    /// Analysis mode: strict (fewer false positives) or loose (more comprehensive)
+    /// </summary>
+    public string AnalysisMode { get; set; } = "loose";
+
+    /// <summary>
+    /// Detect dead/unreachable code (experimental)
+    /// </summary>
+    public bool DetectDeadCode { get; set; } = false;
+
+    /// <summary>
+    /// Detect TODO/HACK/FIXME comments
+    /// </summary>
+    public bool DetectTodoComments { get; set; } = false;
+
+    /// <summary>
     /// Patterns to exclude from analysis (e.g., NuGet packages, build outputs)
     /// </summary>
     public HashSet<string> ExclusionPatterns { get; set; } =
