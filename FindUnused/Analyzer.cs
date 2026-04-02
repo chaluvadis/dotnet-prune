@@ -15,6 +15,29 @@ public static class Analyzer
     private static AnalyzerConfiguration _config = new();
 
     /// <summary>
+    /// Enrich a finding with confidence and severity
+    /// </summary>
+    private static void EnrichFinding(Finding finding, ISymbol symbol, bool hasReferences = false)
+    {
+        var confidence = FindingMetrics.CalculateConfidence(
+            symbol,
+            finding.Accessibility,
+            finding.SymbolKind,
+            hasReferences);
+        
+        finding.confidence = confidence;
+        finding.severity = FindingMetrics.CalculateSeverity(
+            finding.Accessibility,
+            finding.SymbolKind,
+            confidence);
+        
+        if (string.IsNullOrEmpty(finding.Icon))
+        {
+            finding.Icon = FindingMetrics.GetIconForSymbolKind(finding.SymbolKind);
+        }
+    }
+
+    /// <summary>
     /// Analyze a single project for unused symbols
     /// </summary>
     public static async Task<List<Finding>> AnalyzeProjectAsync(
@@ -308,8 +331,10 @@ public static class Analyzer
                 Remarks = "No references found in solution source",
                 DeclaredProject = declaredProject,
                 FallbackProject = fallbackProject,
-                Icon = icon
+                Icon = icon,
+                Confidence = CalculateConfidence(SymbolKindMethod, method.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), method.ExplicitInterfaceImplementations.Any())
             });
+            EnrichFinding(findings[^1], method, false);
             progress?.Report($"    Unused method: {type.ToDisplayString()}.{method.Name} [{method.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
         // Analyze method parameters
@@ -382,8 +407,10 @@ public static class Analyzer
                     Remarks = "Parameter never referenced in solution source",
                     DeclaredProject = declaredProject,
                     FallbackProject = fallbackProject,
-                    Icon = icon
+                    Icon = icon,
+                    Confidence = CalculateConfidence("parameter", method.DeclaredAccessibility.ToString(), true, IsInTestFile(doc?.SyntaxTree), false)
                 });
+                EnrichFinding(findings[^1], param, false);
                 progress?.Report($"      Unused parameter: {method.ToDisplayString()} :: {param.Name} at {filePathDisplay}:{pline}");
             }
         }
@@ -459,8 +486,10 @@ public static class Analyzer
                 Remarks = "No references found in solution source",
                 DeclaredProject = declaredProject,
                 FallbackProject = fallbackProject,
-                Icon = icon
+                Icon = icon,
+                Confidence = CalculateConfidence("property", prop.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), prop.ExplicitInterfaceImplementations.Any())
             });
+            EnrichFinding(findings[^1], prop, false);
             progress?.Report($"    Unused property: {type.ToDisplayString()}.{prop.Name} [{prop.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
         return (findings, referenced);
@@ -534,8 +563,10 @@ public static class Analyzer
                 Remarks = "No references found in solution source",
                 DeclaredProject = declaredProject,
                 FallbackProject = fallbackProject,
-                Icon = icon
+                Icon = icon,
+                Confidence = CalculateConfidence("field", field.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), false)
             });
+            EnrichFinding(findings[^1], field, false);
             progress?.Report($"    Unused field: {type.ToDisplayString()}.{field.Name} [{field.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
         return (findings, referenced);
@@ -639,8 +670,10 @@ public static class Analyzer
                 Remarks = $"No references found in solution source (TypeKind={kind})",
                 DeclaredProject = declaredProject,
                 FallbackProject = fallbackProject,
-                Icon = icon
+                Icon = icon,
+                Confidence = CalculateConfidence(kind, type.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), false)
             });
+            EnrichFinding(findings[^1], type, false);
             progress?.Report($"    Unused type: {type.ToDisplayString()} (Kind={kind}) [{type.DeclaredAccessibility}] at {filePathDisplay}:{line}");
         }
 
@@ -799,4 +832,59 @@ public static class Analyzer
 
     // Diagnostic mode
     public static bool DiagnosticMode { get; set; } = false;
+
+    private static int CalculateConfidence(string symbolKind, string accessibility, bool isParameter, bool isInTestFile, bool hasInterfaceImpl)
+    {
+        int confidence = 80;
+
+        switch (symbolKind.ToLower())
+        {
+            case "parameter":
+                confidence = 50;
+                break;
+            case "field":
+                confidence = 70;
+                break;
+            case "property":
+                confidence = 75;
+                break;
+            case "method":
+                confidence = 80;
+                break;
+            case "type":
+                confidence = 90;
+                break;
+            default:
+                confidence = 75;
+                break;
+        }
+
+        if (accessibility == "Public")
+            confidence -= 10;
+        else if (accessibility == "Private")
+            confidence += 10;
+
+        if (isParameter)
+            confidence = 50;
+
+        if (isInTestFile)
+            confidence -= 20;
+
+        if (hasInterfaceImpl)
+            confidence -= 15;
+
+        return Math.Clamp(confidence, 0, 100);
+    }
+
+    private static bool IsInTestFile(SyntaxTree? tree)
+    {
+        if (tree == null) return false;
+        var filePath = tree.FilePath;
+        return filePath.Contains(".test", StringComparison.OrdinalIgnoreCase) ||
+               filePath.Contains(".tests", StringComparison.OrdinalIgnoreCase) ||
+               filePath.Contains("test/", StringComparison.OrdinalIgnoreCase) ||
+               filePath.Contains("/test", StringComparison.OrdinalIgnoreCase) ||
+               filePath.EndsWith(".test.cs", StringComparison.OrdinalIgnoreCase) ||
+               filePath.EndsWith(".tests.cs", StringComparison.OrdinalIgnoreCase);
+    }
 }
