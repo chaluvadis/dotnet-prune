@@ -43,6 +43,11 @@ const getMinConfidence = (): number => {
   return config.get<number>("minConfidence", 0);
 };
 
+const getAnalysisTimeout = (): number => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<number>("analysisTimeout", 300000);
+};
+
 type Finding = {
   Project: string;
   Solution?: string;
@@ -65,6 +70,7 @@ export function activate(context: vscode.ExtensionContext) {
   const treeView = vscode.window.createTreeView("dotnetprune-findings", {
     treeDataProvider: provider,
     showCollapseAll: true,
+    canSelectMany: true,
   });
 
   context.subscriptions.push(
@@ -93,12 +99,24 @@ export function activate(context: vscode.ExtensionContext) {
         const statusItem = vscode.window.setStatusBarMessage(`DotNetPrune: ${item.filePath} path copied to clipboard`, 3000);
       }
     ),
-    vscode.commands.registerCommand(
-      "dotnetprune.copyProjectName",
-      async (item: ProjectTreeItem) => {
+    vscode.commands.registerCommand("dotnetprune.copyProjectName", async (item: ProjectTreeItem) => {
         if (!item || !item.label) return;
         await vscode.env.clipboard.writeText(item.label);
         const statusItem = vscode.window.setStatusBarMessage(`DotNetPrune: ${item.label} name copied to clipboard`, 3000);
+      }
+    ),
+    vscode.commands.registerCommand(
+      "dotnetprune.deleteFindings",
+      async (items: FindingTreeItem[]) => {
+        if (!items || items.length === 0) return;
+        await provider.deleteFindings(items);
+      }
+    ),
+    vscode.commands.registerCommand(
+      "dotnetprune.generateCleanupScript",
+      async (items: FindingTreeItem[]) => {
+        if (!items || items.length === 0) return;
+        await provider.generateCleanupScript(items);
       }
     )
   );
@@ -325,10 +343,11 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         progress.report({ message: "Executing DotNet Prune analyzer..." });
 
         return new Promise<boolean>((resolve) => {
+          const timeout = getAnalysisTimeout();
           const child = spawn("dotnet", [dllPath, chosenPath], {
             cwd: getWorkspaceRootPath(),
             stdio: ["ignore", "pipe", "pipe"],
-            timeout: 300000, // 5 minute timeout
+            timeout: timeout,
           });
 
           let stdout = "";
@@ -937,6 +956,124 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         `DotNetPrune: failed to open file ${f.FilePath}: ${err.message || err}`
       );
     }
+  }
+
+  async deleteFindings(items: FindingTreeItem[]): Promise<void> {
+    if (!items || items.length === 0) {
+      vscode.window.showWarningMessage("DotNetPrune: No findings selected for deletion.");
+      return;
+    }
+
+    const findings = items.map(item => item.finding);
+    const uniqueFiles = [...new Set(findings.map(f => f.FilePath))];
+
+    const confirmMsg = items.length === 1
+      ? `Delete unused symbol "${findings[0].SymbolName}"?`
+      : `Delete ${items.length} unused symbols across ${uniqueFiles.length} files?`;
+
+    const choice = await vscode.window.showQuickPick([
+      { label: "Delete", id: "delete" },
+      { label: "Cancel", id: "cancel" }
+    ], { placeHolder: confirmMsg });
+
+    if (!choice || choice.id === "cancel") {
+      return;
+    }
+
+    const errors: string[] = [];
+    const deleted: string[] = [];
+
+    for (const finding of findings) {
+      try {
+        if (!finding.FilePath || !fs.existsSync(finding.FilePath)) {
+          errors.push(`File not found: ${finding.FilePath}`);
+          continue;
+        }
+
+        const content = fs.readFileSync(finding.FilePath, 'utf-8');
+        const lines = content.split('\n');
+
+        if (finding.Line < 1 || finding.Line > lines.length) {
+          errors.push(`Invalid line ${finding.Line} in ${finding.FilePath}`);
+          continue;
+        }
+
+        const lineIndex = finding.Line - 1;
+        const line = lines[lineIndex];
+
+        if (line.trim().length > 0) {
+          lines[lineIndex] = '';
+          fs.writeFileSync(finding.FilePath, lines.join('\n'), 'utf-8');
+          deleted.push(finding.SymbolName);
+        }
+      } catch (err: any) {
+        errors.push(`Failed to delete ${finding.SymbolName}: ${err.message}`);
+      }
+    }
+
+    if (deleted.length > 0) {
+      this.findings = this.findings.filter(f => !deleted.includes(f.SymbolName));
+      this._onDidChangeTreeData.fire(undefined);
+      vscode.window.showInformationMessage(`DotNetPrune: Deleted ${deleted.length} unused symbol(s).`);
+    }
+
+    if (errors.length > 0) {
+      const errorMsg = `Errors during deletion: ${errors.join('; ')}`;
+      vscode.window.showWarningMessage(errorMsg);
+      this.appendToOutput(errorMsg, "warning");
+    }
+  }
+
+  async generateCleanupScript(items: FindingTreeItem[]): Promise<void> {
+    if (!items || items.length === 0) {
+      vscode.window.showWarningMessage("DotNetPrune: No findings selected for cleanup script.");
+      return;
+    }
+
+    const findings = items.map(item => item.finding);
+    const uniqueFiles = [...new Set(findings.map(f => f.FilePath))];
+
+    const scriptLines: string[] = [];
+    scriptLines.push('# DotNetPrune Cleanup Script');
+    scriptLines.push(`# Generated: ${new Date().toISOString()}`);
+    scriptLines.push(`# Items: ${items.length}`);
+    scriptLines.push('');
+
+    const fileGroups = new Map<string, Finding[]>();
+    for (const f of findings) {
+      const existing = fileGroups.get(f.FilePath) || [];
+      existing.push(f);
+      fileGroups.set(f.FilePath, existing);
+    }
+
+    for (const [filePath, fileFindings] of fileGroups) {
+      const relativePath = path.relative(getWorkspaceRootPath(), filePath);
+      scriptLines.push(`# File: ${relativePath}`);
+      scriptLines.push(`# Symbols to remove: ${fileFindings.length}`);
+
+      for (const f of fileFindings) {
+        const action = f.SymbolKind.toLowerCase().includes('method') || f.SymbolKind.toLowerCase().includes('function')
+          ? `// Consider removing method: ${f.SymbolName}`
+          : `// Consider removing: ${f.SymbolName} (${f.SymbolKind})`;
+        scriptLines.push(action);
+      }
+      scriptLines.push('');
+    }
+
+    scriptLines.push('# Review each file and remove unused symbols manually.');
+    scriptLines.push('# The analyzer can be run again after cleanup to verify.');
+
+    const scriptContent = scriptLines.join('\n');
+
+    const doc = await vscode.workspace.openTextDocument({
+      content: scriptContent,
+      language: 'plaintext'
+    });
+    await vscode.window.showTextDocument(doc, { preview: false });
+
+    vscode.window.showInformationMessage(
+      `DotNetPrune: Generated cleanup script for ${items.length} item(s).`
+    );
   }
 
   private appendToOutput(text: string, level: "debug" | "info" | "warning" | "error" = "info") {
