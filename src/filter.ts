@@ -5,6 +5,7 @@ export interface FilterState {
   projects: Set<string>;
   minConfidence: number;
   searchText: string;
+  searchRegex?: string;
 }
 
 export class FindingFilter {
@@ -13,6 +14,7 @@ export class FindingFilter {
     projects: new Set(),
     minConfidence: 0,
     searchText: "",
+    searchRegex: undefined,
   };
 
   setSymbolKindFilter(kinds: string[]): void {
@@ -29,6 +31,12 @@ export class FindingFilter {
 
   setSearchText(text: string): void {
     this.state.searchText = text.toLowerCase();
+    this.state.searchRegex = undefined;
+  }
+
+  setSearchRegex(pattern: string): void {
+    this.state.searchRegex = pattern;
+    this.state.searchText = "";
   }
 
   clearAll(): void {
@@ -37,6 +45,7 @@ export class FindingFilter {
       projects: new Set(),
       minConfidence: 0,
       searchText: "",
+      searchRegex: undefined,
     };
   }
 
@@ -82,6 +91,26 @@ export class FindingFilter {
       }
     }
 
+    // Search regex filter
+    if (this.state.searchRegex) {
+      try {
+        const regex = new RegExp(this.state.searchRegex, "i");
+        const searchableText = [
+          finding.SymbolName ?? "",
+          finding.ContainingType ?? "",
+          finding.Project ?? "",
+          finding.FilePath ?? "",
+          finding.Remarks ?? "",
+        ].join(" ");
+
+        if (!regex.test(searchableText)) {
+          return false;
+        }
+      } catch (e) {
+        return false;
+      }
+    }
+
     return true;
   }
 
@@ -90,7 +119,8 @@ export class FindingFilter {
       this.state.symbolKinds.size > 0 ||
       this.state.projects.size > 0 ||
       this.state.minConfidence > 0 ||
-      this.state.searchText !== ""
+      this.state.searchText !== "" ||
+      this.state.searchRegex !== undefined
     );
   }
 

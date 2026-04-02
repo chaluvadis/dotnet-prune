@@ -1671,14 +1671,39 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   async searchFindings(): Promise<void> {
+    const useRegex = await vscode.window.showQuickPick(
+      [
+        { label: "Normal text search", description: "Case-insensitive text match", value: "text" },
+        { label: "Regex search", description: "Regular expression match", value: "regex" },
+      ],
+      { placeHolder: "Select search mode" }
+    );
+    
+    if (!useRegex) {
+      return;
+    }
+
+    const prompt = useRegex.value === "regex"
+      ? "Search findings using regex pattern"
+      : "Search findings (symbol name, type, file, etc.)";
+    const placeHolder = useRegex.value === "regex"
+      ? "Enter regex pattern..."
+      : "Enter search text...";
+
     const input = await vscode.window.showInputBox({
-      prompt: "Search findings (symbol name, type, file, etc.)",
-      placeHolder: "Enter search text...",
+      prompt,
+      placeHolder,
     });
 
-    if (input !== undefined) {
-      this.filter.setSearchText(input);
+    if (input !== undefined && input !== "") {
+      if (useRegex.value === "regex") {
+        this.filter.setSearchRegex(input);
+      } else {
+        this.filter.setSearchText(input);
+      }
       this.applyFilters();
+      const count = this.findings.length;
+      vscode.window.setStatusBarMessage(`DotNetPrune: ${count} of ${this.allFindings.length} items`, 3000);
     }
   }
 
