@@ -22,6 +22,7 @@
   ],
   "activationEvents": [
     "onView:dotnetprune-findings",
+    "onView:dotnetprune-metrics",
     "onCommand:dotnetprune.refresh",
     "onCommand:dotnetprune.runAnalysis",
     "onCommand:dotnetprune.clearFindings",
@@ -29,7 +30,8 @@
     "onCommand:dotnetprune.copyFilePath",
     "onCommand:dotnetprune.copyProjectName",
     "onCommand:dotnetprune.deleteFindings",
-    "onCommand:dotnetprune.generateCleanupScript"
+    "onCommand:dotnetprune.generateCleanupScript",
+    "onCommand:dotnetprune.exportMetrics"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -57,6 +59,10 @@
       {
         "command": "dotnetprune.copyProjectName",
         "title": "Copy Project Name"
+      },
+      {
+        "command": "dotnetprune.exportMetrics",
+        "title": "DotNetPrune: Export Metrics"
       }
     ],
     "configuration": {
@@ -117,6 +123,11 @@
         {
           "id": "dotnetprune-findings",
           "name": "Findings",
+          "icon": "resources/icon.png"
+        },
+        {
+          "id": "dotnetprune-metrics",
+          "name": "Metrics",
           "icon": "resources/icon.png"
         }
       ]
