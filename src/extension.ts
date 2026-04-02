@@ -19,6 +19,39 @@ import { PruneExecutor } from "./pruneExecutor";
 
 let outputChannel: vscode.OutputChannel | undefined;
 
+const LOG_LEVELS: Record<string, number> = {
+  debug: 0,
+  info: 1,
+  warning: 2,
+  error: 3,
+};
+
+const getLogLevel = (): number => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  const level = config.get<string>("logLevel", "info");
+  return LOG_LEVELS[level] ?? LOG_LEVELS.info;
+};
+
+const getMaxFindings = (): number => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<number>("maxFindings", 1000);
+};
+
+const getAnalyzerPath = (): string | undefined => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<string>("analyzerPath", "");
+};
+
+const getAutoRefreshOnSave = (): boolean => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<boolean>("autoRefreshOnSave", false);
+};
+
+const getConfidenceLevel = (): string => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<string>("confidenceLevel", "all");
+};
+
 type Finding = {
   Project: string;
   Solution?: string;
@@ -692,8 +725,24 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       vscode.window.showErrorMessage(
         "DotNetPrune: Open a workspace before running analysis."
       );
+      this.appendToOutput("DotNetPrune: Workspace is not trusted. Analysis aborted.", "warning");
       return;
     }
+
+    if (this.isAnalysisRunning) {
+      vscode.window.showWarningMessage("DotNetPrune: Analysis already in progress.");
+      return;
+    }
+
+    this.isAnalysisRunning = true;
+    try {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (!workspaceFolders || workspaceFolders.length === 0) {
+        vscode.window.showErrorMessage(
+          "DotNetPrune: Open a workspace before running analysis."
+        );
+        return;
+      }
 
     // discover solution/csproj files (excluding build folders)
     const excludedFolders = "**/{bin,debug,obj,release,nuget,bin/**,debug/**,obj/**,release/**,nuget/**}/**";
@@ -1156,6 +1205,22 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         const ext = path.extname(finding.FilePath).toLowerCase();
         const dotNetFiles = [".cs", ".sln", ".slnx", ".csproj"];
         return dotNetFiles.includes(ext);
+      })
+      .filter((finding: Finding) => {
+        // Filter by confidence level if configured
+        const level = getConfidenceLevel();
+        if (level === "all") return true;
+        
+        const confidence = finding.confidence ?? 100;
+        
+        if (level === "high") {
+          return confidence >= 80;
+        } else if (level === "medium") {
+          return confidence >= 50 && confidence < 80;
+        } else if (level === "low") {
+          return confidence < 50;
+        }
+        return true;
       });
 
     // Store all findings
