@@ -16,6 +16,7 @@ import {
   CsprojNavigator,
 } from "./packageInventory";
 import { PruneExecutor } from "./pruneExecutor";
+import { FileHashCache, getOrCreateCache, clearGlobalCache } from "./cache";
 
 let outputChannel: vscode.OutputChannel | undefined;
 
@@ -68,6 +69,14 @@ type Finding = {
   confidence?: number;
   severity?: "error" | "warning" | "information" | "hint";
   Icon: string;
+  referenceCount?: number;
+  references?: Array<{
+    filePath: string;
+    line: number;
+    column?: number;
+    type: "direct" | "base" | "delegate" | "possible";
+    context?: string;
+  }>;
 };
 
 export function activate(context: vscode.ExtensionContext) {
@@ -75,6 +84,7 @@ export function activate(context: vscode.ExtensionContext) {
   const treeView = vscode.window.createTreeView("dotnetprune-findings", {
     treeDataProvider: provider,
     showCollapseAll: true,
+    canSelectMany: true,
   });
 
   // Package inventory view (Phase 1 read-only)
@@ -129,6 +139,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("dotnetprune.clearFindings", () =>
       provider.clear()
     ),
+    vscode.commands.registerCommand("dotnetprune.clearCache", () => {
+      clearGlobalCache();
+      vscode.window.showInformationMessage("DotNetPrune: Analysis cache cleared.");
+    }),
+    vscode.commands.registerCommand("dotnetprune.forceFullAnalysis", async () => {
+      clearGlobalCache();
+      await provider.runAnalysisAndRefresh();
+    }),
     vscode.commands.registerCommand(
       "dotnetprune.openFinding",
       async (item: FindingTreeItem) => {
@@ -147,9 +165,7 @@ export function activate(context: vscode.ExtensionContext) {
         );
       }
     ),
-    vscode.commands.registerCommand(
-      "dotnetprune.copyProjectName",
-      async (item: ProjectTreeItem) => {
+    vscode.commands.registerCommand("dotnetprune.copyProjectName", async (item: ProjectTreeItem) => {
         if (!item || !item.label) return;
         await vscode.env.clipboard.writeText(item.label);
         vscode.window.setStatusBarMessage(
@@ -670,12 +686,14 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   private codeActionsProvider?: CodeActionsProvider;
   private decorator?: InlineDecorator;
   private isAnalysisRunning = false; // Run-lock to prevent overlapping analysis
-  private groupByType: boolean = false; // Group findings by containing type
+  private fileCache?: FileHashCache; // Cache for incremental analysis
 
   constructor(private context: vscode.ExtensionContext) {
     // Load ignored findings from workspace state
     const ignored = context.workspaceState.get<string[]>("ignoredFindings", []);
     this.ignoredFindings = new Set(ignored);
+    // Initialize file hash cache for incremental analysis
+    this.fileCache = new FileHashCache(getWorkspaceRootPath());
   }
 
   setProviders(
@@ -1003,6 +1021,23 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       );
 
       if (!run) return;
+
+      // Update file hash cache after successful analysis
+      if (this.fileCache) {
+        const csprojFiles = await vscode.workspace.findFiles(
+          "**/*.csproj",
+          "**/{bin,debug,obj,release}/**",
+          100
+        );
+        const filePaths = csprojFiles.map(f => f.fsPath);
+        const analyzerVersion = "1.0.0"; // Could be read from extension version
+        await this.fileCache.updateCache(filePaths, analyzerVersion);
+        
+        if (!silent) {
+          const cacheSize = this.fileCache.getCacheSize();
+          this.appendToOutput(`Cache updated: ${filePaths.length} files, ${(cacheSize / 1024).toFixed(1)}KB`, "debug");
+        }
+      }
 
       this._onDidChangeTreeData.fire(undefined);
       vscode.window.showInformationMessage(
@@ -1761,6 +1796,26 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   <div class="detail">
     <span class="label">Remarks:</span>
     <span class="value">${esc(finding.Remarks)}</span>
+  </div>
+  ` : ""}
+  ${finding.referenceCount !== undefined ? `
+  <div class="detail">
+    <span class="label">Reference Count:</span>
+    <span class="value">${finding.referenceCount}</span>
+  </div>
+  ` : ""}
+  ${finding.references && finding.references.length > 0 ? `
+  <div class="detail">
+    <span class="label">References:</span>
+    <ul>
+      ${finding.references.map(ref => `
+        <li>
+          <span class="value">${esc(ref.filePath)}:${ref.line}</span>
+          <span class="label"> (${ref.type})</span>
+          ${ref.context ? `<span class="value"> - ${esc(ref.context)}</span>` : ""}
+        </li>
+      `).join('')}
+    </ul>
   </div>
   ` : ""}
 </body>
