@@ -53,6 +53,11 @@ const getConfidenceLevel = (): string => {
   return config.get<string>("confidenceLevel", "all");
 };
 
+const getAnalysisTimeout = (): number => {
+  const config = vscode.workspace.getConfiguration("dotnetprune");
+  return config.get<number>("analysisTimeout", 300000);
+};
+
 type Finding = {
   Project: string;
   Solution?: string;
@@ -1535,6 +1540,124 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         `DotNetPrune: failed to open file ${f.FilePath}: ${err.message || err}`
       );
     }
+}
+
+  async deleteFindings(items: FindingTreeItem[]): Promise<void> {
+    if (!items || items.length === 0) {
+      vscode.window.showWarningMessage("DotNetPrune: No findings selected for deletion.");
+      return;
+    }
+
+    const findings = items.map(item => item.finding);
+    const uniqueFiles = [...new Set(findings.map(f => f.FilePath))];
+
+    const confirmMsg = items.length === 1
+      ? `Delete unused symbol "${findings[0].SymbolName}"?`
+      : `Delete ${items.length} unused symbols across ${uniqueFiles.length} files?`;
+
+    const choice = await vscode.window.showQuickPick([
+      { label: "Delete", id: "delete" },
+      { label: "Cancel", id: "cancel" }
+    ], { placeHolder: confirmMsg });
+
+    if (!choice || choice.id === "cancel") {
+      return;
+    }
+
+    const errors: string[] = [];
+    const deleted: string[] = [];
+
+    for (const finding of findings) {
+      try {
+        if (!finding.FilePath || !fs.existsSync(finding.FilePath)) {
+          errors.push(`File not found: ${finding.FilePath}`);
+          continue;
+        }
+
+        const content = fs.readFileSync(finding.FilePath, 'utf-8');
+        const lines = content.split('\n');
+
+        if (finding.Line < 1 || finding.Line > lines.length) {
+          errors.push(`Invalid line ${finding.Line} in ${finding.FilePath}`);
+          continue;
+        }
+
+        const lineIndex = finding.Line - 1;
+        const line = lines[lineIndex];
+
+        if (line.trim().length > 0) {
+          lines[lineIndex] = '';
+          fs.writeFileSync(finding.FilePath, lines.join('\n'), 'utf-8');
+          deleted.push(finding.SymbolName);
+        }
+      } catch (err: any) {
+        errors.push(`Failed to delete ${finding.SymbolName}: ${err.message}`);
+      }
+    }
+
+    if (deleted.length > 0) {
+      this.findings = this.findings.filter(f => !deleted.includes(f.SymbolName));
+      this._onDidChangeTreeData.fire(undefined);
+      vscode.window.showInformationMessage(`DotNetPrune: Deleted ${deleted.length} unused symbol(s).`);
+    }
+
+    if (errors.length > 0) {
+      const errorMsg = `Errors during deletion: ${errors.join('; ')}`;
+      vscode.window.showWarningMessage(errorMsg);
+      this.appendToOutput(errorMsg, "warning");
+    }
+  }
+
+  async generateCleanupScript(items: FindingTreeItem[]): Promise<void> {
+    if (!items || items.length === 0) {
+      vscode.window.showWarningMessage("DotNetPrune: No findings selected for cleanup script.");
+      return;
+    }
+
+    const findings = items.map(item => item.finding);
+    const uniqueFiles = [...new Set(findings.map(f => f.FilePath))];
+
+    const scriptLines: string[] = [];
+    scriptLines.push('# DotNetPrune Cleanup Script');
+    scriptLines.push(`# Generated: ${new Date().toISOString()}`);
+    scriptLines.push(`# Items: ${items.length}`);
+    scriptLines.push('');
+
+    const fileGroups = new Map<string, Finding[]>();
+    for (const f of findings) {
+      const existing = fileGroups.get(f.FilePath) || [];
+      existing.push(f);
+      fileGroups.set(f.FilePath, existing);
+    }
+
+    for (const [filePath, fileFindings] of fileGroups) {
+      const relativePath = path.relative(getWorkspaceRootPath(), filePath);
+      scriptLines.push(`# File: ${relativePath}`);
+      scriptLines.push(`# Symbols to remove: ${fileFindings.length}`);
+
+      for (const f of fileFindings) {
+        const action = f.SymbolKind.toLowerCase().includes('method') || f.SymbolKind.toLowerCase().includes('function')
+          ? `// Consider removing method: ${f.SymbolName}`
+          : `// Consider removing: ${f.SymbolName} (${f.SymbolKind})`;
+        scriptLines.push(action);
+      }
+      scriptLines.push('');
+    }
+
+    scriptLines.push('# Review each file and remove unused symbols manually.');
+    scriptLines.push('# The analyzer can be run again after cleanup to verify.');
+
+    const scriptContent = scriptLines.join('\n');
+
+    const doc = await vscode.workspace.openTextDocument({
+      content: scriptContent,
+      language: 'plaintext'
+    });
+    await vscode.window.showTextDocument(doc, { preview: false });
+
+    vscode.window.showInformationMessage(
+      `DotNetPrune: Generated cleanup script for ${items.length} item(s).`
+    );
   }
 
   // Filter methods
@@ -1594,14 +1717,39 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   async searchFindings(): Promise<void> {
+    const useRegex = await vscode.window.showQuickPick(
+      [
+        { label: "Normal text search", description: "Case-insensitive text match", value: "text" },
+        { label: "Regex search", description: "Regular expression match", value: "regex" },
+      ],
+      { placeHolder: "Select search mode" }
+    );
+    
+    if (!useRegex) {
+      return;
+    }
+
+    const prompt = useRegex.value === "regex"
+      ? "Search findings using regex pattern"
+      : "Search findings (symbol name, type, file, etc.)";
+    const placeHolder = useRegex.value === "regex"
+      ? "Enter regex pattern..."
+      : "Enter search text...";
+
     const input = await vscode.window.showInputBox({
-      prompt: "Search findings (symbol name, type, file, etc.)",
-      placeHolder: "Enter search text...",
+      prompt,
+      placeHolder,
     });
 
-    if (input !== undefined) {
-      this.filter.setSearchText(input);
+    if (input !== undefined && input !== "") {
+      if (useRegex.value === "regex") {
+        this.filter.setSearchRegex(input);
+      } else {
+        this.filter.setSearchText(input);
+      }
       this.applyFilters();
+      const count = this.findings.length;
+      vscode.window.setStatusBarMessage(`DotNetPrune: ${count} of ${this.allFindings.length} items`, 3000);
     }
   }
 
@@ -1612,18 +1760,14 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   private applyFilters(): void {
-    // Apply filters to findings
     this.findings = this.allFindings.filter((f) =>
       !this.ignoredFindings.has(this.getFindingId(f)) && this.filter.matches(f)
     );
     
-    // Rebuild grouped structure
     this.rebuildGroupedStructure();
     
-    // Update UI
     this._onDidChangeTreeData.fire(undefined);
     
-    // Update diagnostics and decorations
     this.updateIntegrations();
   }
 
@@ -1681,7 +1825,6 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       if (config.integration.enableCodeActions) {
         this.codeActionsProvider.updateFindings(this.findings);
       } else {
-        // Clear any previously loaded findings so code actions do not use stale data
         this.codeActionsProvider.updateFindings([]);
       }
     }
@@ -1699,13 +1842,11 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     const id = this.getFindingId(finding);
     this.ignoredFindings.add(id);
     
-    // Save to workspace state
     await this.context.workspaceState.update(
       "ignoredFindings",
       Array.from(this.ignoredFindings)
     );
     
-    // Reapply filters
     this.applyFilters();
     
     vscode.window.showInformationMessage("DotNetPrune: Finding ignored");
@@ -1725,18 +1866,14 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       const doc = await vscode.workspace.openTextDocument(finding.FilePath);
       await vscode.window.showTextDocument(doc);
       
-      // Find the symbol declaration and delete it
       const line = Math.max(0, finding.Line - 1);
       
-      // Simple deletion: delete the entire line
-      // In a real implementation, you'd want more sophisticated code parsing
       const edit = new vscode.WorkspaceEdit();
       edit.delete(doc.uri, new vscode.Range(line, 0, line + 1, 0));
       
       await vscode.workspace.applyEdit(edit);
       await doc.save();
       
-      // Remove from findings
       await this.ignoreFinding(finding);
       
       vscode.window.showInformationMessage(
@@ -1799,10 +1936,6 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     <span class="value">${finding.Line}</span>
   </div>
   <div class="detail">
-    <span class="label">Project:</span>
-    <span class="value">${esc(finding.Project)}</span>
-  </div>
-  <div class="detail">
     <span class="label">Accessibility:</span>
     <span class="value">${esc(finding.Accessibility)}</span>
   </div>
@@ -1811,10 +1944,10 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     <span class="label">Confidence:</span>
     <span class="value">${finding.confidence}%</span>
   </div>
-  ` : ""}
+  ` : ''}
   ${finding.Remarks ? `
   <div class="detail">
-    <span class="label">Remarks:</span>
+    <span class="label">Details:</span>
     <span class="value">${esc(finding.Remarks)}</span>
   </div>
   ` : ""}
@@ -1842,30 +1975,6 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 </html>`;
   }
 
-  async bulkIgnore(): Promise<void> {
-    vscode.window.showInformationMessage(
-      "DotNetPrune: Bulk ignore not yet implemented"
-    );
-  }
-
-  async bulkDelete(): Promise<void> {
-    vscode.window.showInformationMessage(
-      "DotNetPrune: Bulk delete not yet implemented"
-    );
-  }
-
-  private getFindingId(finding: Finding): string {
-    return `${finding.FilePath}:${finding.Line}:${finding.SymbolKind}:${finding.SymbolName}`;
-  }
-
-private static readonly LOG_LEVELS: Record<string, number> = {
-    off: 0,
-    error: 1,
-    warn: 2,
-    info: 3,
-    debug: 4,
-  };
-
   private appendToOutput(text: string, level: "error" | "warn" | "info" | "debug" = "info") {
     const cfg = getConfig();
     const configuredLevel = UnusedTreeProvider.LOG_LEVELS[cfg.logLevel] ?? UnusedTreeProvider.LOG_LEVELS.info;
@@ -1879,7 +1988,6 @@ private static readonly LOG_LEVELS: Record<string, number> = {
       outputChannel = vscode.window.createOutputChannel("DotNetPrune");
     }
     outputChannel.appendLine(`[${level.toUpperCase()}] ${text}`);
-    // Only auto-show the output channel for errors/warnings
     if (level === "error" || level === "warn") {
       outputChannel.show(true);
     }
