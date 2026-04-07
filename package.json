@@ -102,6 +102,10 @@
         "title": "DotNetPrune: Clear All Filters"
       },
       {
+        "command": "dotnetprune.toggleGroupByType",
+        "title": "DotNetPrune: Toggle Group by Type"
+      },
+      {
         "command": "dotnetprune.bulkIgnore",
         "title": "DotNetPrune: Bulk Ignore Selected"
       },
