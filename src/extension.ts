@@ -69,6 +69,14 @@ type Finding = {
   confidence?: number;
   severity?: "error" | "warning" | "information" | "hint";
   Icon: string;
+  referenceCount?: number;
+  references?: Array<{
+    filePath: string;
+    line: number;
+    column?: number;
+    type: "direct" | "base" | "delegate" | "possible";
+    context?: string;
+  }>;
 };
 
 export function activate(context: vscode.ExtensionContext) {
@@ -1769,6 +1777,26 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   <div class="detail">
     <span class="label">Remarks:</span>
     <span class="value">${esc(finding.Remarks)}</span>
+  </div>
+  ` : ""}
+  ${finding.referenceCount !== undefined ? `
+  <div class="detail">
+    <span class="label">Reference Count:</span>
+    <span class="value">${finding.referenceCount}</span>
+  </div>
+  ` : ""}
+  ${finding.references && finding.references.length > 0 ? `
+  <div class="detail">
+    <span class="label">References:</span>
+    <ul>
+      ${finding.references.map(ref => `
+        <li>
+          <span class="value">${esc(ref.filePath)}:${ref.line}</span>
+          <span class="label"> (${ref.type})</span>
+          ${ref.context ? `<span class="value"> - ${esc(ref.context)}</span>` : ""}
+        </li>
+      `).join('')}
+    </ul>
   </div>
   ` : ""}
 </body>
