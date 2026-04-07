@@ -13,6 +13,7 @@ export interface DotNetPruneConfig {
     exclusionPatterns: string[];
     inclusionPatterns: string[];
     symbolKinds: string[];
+    confidenceLevel: "all" | "high" | "medium" | "low";
   };
   ui: {
     enableInlineHighlighting: boolean;
@@ -70,6 +71,7 @@ export function getConfig(): DotNetPruneConfig {
         "Parameter",
         "Type",
       ]),
+      confidenceLevel: config.get("filter.confidenceLevel", "all"),
     },
     ui: {
       enableInlineHighlighting: config.get("ui.enableInlineHighlighting", true),

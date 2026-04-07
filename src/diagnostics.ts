@@ -1,22 +1,7 @@
 import * as vscode from "vscode";
+import type { Finding } from "./types";
 
-export interface Finding {
-  Project: string;
-  Solution?: string;
-  FilePath: string;
-  FilePathDisplay: string;
-  DisplayName: string;
-  ProjectFilePath: string;
-  Line: number;
-  SymbolKind: string;
-  ContainingType: string;
-  SymbolName: string;
-  Accessibility: string;
-  Remarks: string;
-  confidence?: number;
-  severity?: "error" | "warning" | "information" | "hint";
-  Icon: string;
-}
+export type { Finding };
 
 export class DiagnosticProvider {
   private diagnosticCollection: vscode.DiagnosticCollection;

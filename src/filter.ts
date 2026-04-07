@@ -1,4 +1,4 @@
-import type { Finding } from "./diagnostics";
+import type { Finding } from "./types";
 
 export interface FilterState {
   symbolKinds: Set<string>;
@@ -16,6 +16,35 @@ export class FindingFilter {
     searchText: "",
     searchRegex: undefined,
   };
+  private ignoredFindings: Set<string> = new Set();
+
+  addIgnored(finding: Finding): void {
+    this.ignoredFindings.add(this.getFindingId(finding));
+  }
+
+  removeIgnored(finding: Finding): void {
+    this.ignoredFindings.delete(this.getFindingId(finding));
+  }
+
+  isIgnored(finding: Finding): boolean {
+    return this.ignoredFindings.has(this.getFindingId(finding));
+  }
+
+  getIgnoredFindings(): Set<string> {
+    return new Set(this.ignoredFindings);
+  }
+
+  setIgnoredFindings(ids: Set<string>): void {
+    this.ignoredFindings = new Set(ids);
+  }
+
+  clearIgnored(): void {
+    this.ignoredFindings.clear();
+  }
+
+  private getFindingId(finding: Finding): string {
+    return `${finding.FilePath}:${finding.Line}:${finding.SymbolName}`;
+  }
 
   setSymbolKindFilter(kinds: string[]): void {
     this.state.symbolKinds = new Set(kinds);
@@ -50,6 +79,11 @@ export class FindingFilter {
   }
 
   matches(finding: Finding): boolean {
+    // Check ignored first
+    if (this.ignoredFindings.size > 0 && this.isIgnored(finding)) {
+      return false;
+    }
+
     // Symbol kind filter
     if (
       this.state.symbolKinds.size > 0 &&
@@ -120,7 +154,8 @@ export class FindingFilter {
       this.state.projects.size > 0 ||
       this.state.minConfidence > 0 ||
       this.state.searchText !== "" ||
-      this.state.searchRegex !== undefined
+      this.state.searchRegex !== undefined ||
+      this.ignoredFindings.size > 0
     );
   }
 

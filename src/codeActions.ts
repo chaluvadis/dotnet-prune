@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { Finding } from "./diagnostics";
+import type { Finding } from "./types";
 
 export class CodeActionsProvider implements vscode.CodeActionProvider {
   private findings: Finding[] = [];

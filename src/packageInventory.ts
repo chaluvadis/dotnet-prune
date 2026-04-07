@@ -549,7 +549,7 @@ export class PackageInventoryProvider
   private confidenceFilter: PruneConfidence | "All" = "All";
   private _cancellationSource: vscode.CancellationTokenSource | undefined;
 
-  constructor(_context: vscode.ExtensionContext) {}
+  constructor() {}
 
   /** Returns the output channel, creating it if necessary. */
   getOutputChannel(): vscode.OutputChannel {

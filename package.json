@@ -1,8 +1,8 @@
 {
   "name": "dotnet-prune-vscode",
-  "displayName": "DotNetPrune",
+  "displayName": "DotNet Prune",
   "description": "Visualize unused .NET code in VS Code with hierarchical tree view showing findings organized by solution, project, and files.",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "publisher": "nomad-in-code",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -15,45 +15,12 @@
     "url": "https://github.com/chaluvadis/dotnet-prune/issues"
   },
   "engines": {
-    "vscode": "^1.106.0"
+    "vscode": "^1.110.0"
   },
   "categories": [
     "Linters"
   ],
-  "activationEvents": [
-    "onView:dotnetprune-findings",
-    "onView:dotnetprune-packages",
-    "onCommand:dotnetprune.runAnalysis",
-    "onCommand:dotnetprune.refresh",
-    "onCommand:dotnetprune.clearFindings",
-    "onCommand:dotnetprune.exportFindings",
-    "onCommand:dotnetprune.filterBySymbolKind",
-    "onCommand:dotnetprune.filterByConfidence",
-    "onCommand:dotnetprune.filterByProject",
-    "onCommand:dotnetprune.searchFindings",
-    "onCommand:dotnetprune.clearFilters",
-    "onCommand:dotnetprune.bulkIgnore",
-    "onCommand:dotnetprune.bulkDelete",
-    "onCommand:dotnetprune.ignoreFinding",
-    "onCommand:dotnetprune.deleteFinding",
-    "onCommand:dotnetprune.showFindingDetails",
-    "onCommand:dotnetprune.openFinding",
-    "onCommand:dotnetprune.copyFilePath",
-    "onCommand:dotnetprune.copyProjectName",
-    "onCommand:dotnetprune.analyzePackages",
-    "onCommand:dotnetprune.refreshPackages",
-    "onCommand:dotnetprune.clearPackages",
-    "onCommand:dotnetprune.previewPruneProject",
-    "onCommand:dotnetprune.applyPruneProject",
-    "onCommand:dotnetprune.previewPrunePackage",
-    "onCommand:dotnetprune.applyPrunePackage",
-    "onCommand:dotnetprune.exportPruneReport",
-    "onCommand:dotnetprune.suppressPackage",
-    "onCommand:dotnetprune.openAllowlistConfig",
-    "onCommand:dotnetprune.goToPackageReference",
-    "onCommand:dotnetprune.reanalyzePackages",
-    "onCommand:dotnetprune.filterPackagesByConfidence"
-  ],
+  "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -72,6 +39,10 @@
       {
         "command": "dotnetprune.openFinding",
         "title": "DotNetPrune: Open Finding"
+      },
+      {
+        "command": "dotnetprune.showFindingDetails",
+        "title": "DotNetPrune: Show Finding Details"
       },
       {
         "command": "dotnetprune.copyFilePath",
@@ -208,17 +179,17 @@
         "dotnetprune.analysis.includePublicSymbols": {
           "type": "boolean",
           "default": true,
-          "description": "Include public symbols in the analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
+          "description": "Include public symbols in the analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.includeInternalSymbols": {
           "type": "boolean",
           "default": true,
-          "description": "Include internal symbols in the analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
+          "description": "Include internal symbols in the analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.excludeGeneratedCode": {
           "type": "boolean",
           "default": true,
-          "description": "Exclude auto-generated code from analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
+          "description": "Exclude auto-generated code from analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.mode": {
           "type": "string",
@@ -227,17 +198,17 @@
             "loose"
           ],
           "default": "loose",
-          "description": "Analysis mode: strict (fewer false positives) or loose (more comprehensive). (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
+          "description": "Analysis mode: strict (fewer false positives) or loose (more comprehensive). (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.detectDeadCode": {
           "type": "boolean",
           "default": false,
-          "description": "Detect dead/unreachable code (experimental). (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
+          "description": "Detect dead/unreachable code (experimental). (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analysis.detectTodoComments": {
           "type": "boolean",
           "default": false,
-          "description": "Detect TODO/HACK/FIXME comments. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
+          "description": "Detect TODO/HACK/FIXME comments. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.filter.exclusionPatterns": {
           "type": "array",
@@ -249,7 +220,7 @@
             "**/obj/**",
             "**/node_modules/**"
           ],
-          "description": "Glob patterns to exclude from analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
+          "description": "Glob patterns to exclude from analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.filter.inclusionPatterns": {
           "type": "array",
@@ -261,7 +232,7 @@
             "**/*.sln",
             "**/*.csproj"
           ],
-          "description": "Glob patterns to include in analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
+          "description": "Glob patterns to include in analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.filter.symbolKinds": {
           "type": "array",
@@ -286,7 +257,18 @@
             "Parameter",
             "Type"
           ],
-          "description": "Symbol kinds to analyze. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
+          "description": "Symbol kinds to analyze. (Reserved for future use — not yet passed to the analyzer CLI.)"
+        },
+        "dotnetprune.filter.confidenceLevel": {
+          "type": "string",
+          "enum": [
+            "all",
+            "high",
+            "medium",
+            "low"
+          ],
+          "default": "all",
+          "description": "Filter findings by confidence level: all, high (>=80), medium (50-79), low (<50)"
         },
         "dotnetprune.ui.enableInlineHighlighting": {
           "type": "boolean",
@@ -318,11 +300,6 @@
           "default": true,
           "description": "Enable incremental analysis - only re-analyze changed files since last run. Uses file hash comparison to detect changes."
         },
-        "dotnetprune.performance.parallelAnalysis": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable parallel analysis of projects. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
-        },
         "dotnetprune.integration.enableProblemsPanel": {
           "type": "boolean",
           "default": true,
@@ -350,7 +327,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Additional glob patterns to exclude from analysis. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
+          "description": "Additional glob patterns to exclude from analysis. (Reserved for future use — not yet passed to the analyzer CLI.)"
         },
         "dotnetprune.analyzerPath": {
           "type": "string",
@@ -413,6 +390,11 @@
           "id": "dotnetprune-packages",
           "name": "Package References",
           "icon": "resources/icon.png"
+        },
+        {
+          "id": "dotnetprune-metrics",
+          "name": "Metrics",
+          "icon": "resources/icon.png"
         }
       ]
     },
@@ -452,6 +434,21 @@
           "command": "dotnetprune.filterByProject",
           "when": "view == dotnetprune-findings",
           "group": "1_filters@4"
+        },
+        {
+          "command": "dotnetprune.clearCache",
+          "when": "view == dotnetprune-findings",
+          "group": "2_utilities@1"
+        },
+        {
+          "command": "dotnetprune.forceFullAnalysis",
+          "when": "view == dotnetprune-findings",
+          "group": "2_utilities@2"
+        },
+        {
+          "command": "dotnetprune.toggleGroupByType",
+          "when": "view == dotnetprune-findings",
+          "group": "navigation@4"
         },
         {
           "command": "dotnetprune.analyzePackages",
@@ -539,27 +536,26 @@
           "command": "dotnetprune.goToPackageReference",
           "when": "view == dotnetprune-packages && viewItem == pkg-referenced",
           "group": "3_navigate@1"
+        },
+        {
+          "command": "dotnetprune.showFindingDetails",
+          "when": "view == dotnetprune-findings && viewItem == finding",
+          "group": "3_info@1"
         }
       ]
     }
   },
   "scripts": {
-    "compile": "node esbuild.js",
+    "compile": "tsc --noEmit && node esbuild.js",
     "clean": "rm -rf *.vsix dist",
-    "dotnet:publish": "dotnet publish ./FindUnused/FindUnused.csproj --output ./dist/FindUnused/",
+    "dotnet:publish": "dotnet publish ./FindUnused/FindUnused.csproj -c Release --output ./dist/FindUnused/",
     "package": "pnpm clean && pnpm compile && pnpm dotnet:publish && vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.106.0",
-    "@types/mocha": "^10.0.10",
-    "@types/node": "24.10.1",
-    "typescript-eslint": "^8.46.4",
-    "eslint": "^9.39.1",
-    "esbuild": "^0.27.0",
-    "npm-run-all": "^4.1.5",
-    "typescript": "^5.9.3",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2",
-    "@vscode/vsce": "^3.7.0"
+    "@types/vscode": "^1.110.0",
+    "@types/node": "25.5.2",
+    "@biomejs/biome": "^2.4.10",
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.2"
   }
 }

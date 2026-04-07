@@ -15,17 +15,19 @@ import {
   AllowlistWriter,
   CsprojNavigator,
 } from "./packageInventory";
+import type { Finding, MetricsData } from "./types";
+import { PathResolver, getOrCreatePathResolver, clearGlobalPathResolver } from "./pathResolver";
 import { PruneExecutor } from "./pruneExecutor";
-import { FileHashCache, getOrCreateCache, clearGlobalCache } from "./cache";
-
-let outputChannel: vscode.OutputChannel | undefined;
+import { FileHashCache, clearGlobalCache, getOrCreateCache } from "./cache";
 
 const LOG_LEVELS: Record<string, number> = {
   debug: 0,
   info: 1,
-  warning: 2,
+  warn: 2,
   error: 3,
 };
+
+let outputChannel: vscode.OutputChannel | undefined;
 
 const getLogLevel = (): number => {
   const config = vscode.workspace.getConfiguration("dotnetprune");
@@ -49,47 +51,13 @@ const getAutoRefreshOnSave = (): boolean => {
 };
 
 const getConfidenceLevel = (): string => {
-  const config = vscode.workspace.getConfiguration("dotnetprune");
-  return config.get<string>("confidenceLevel", "all");
+  const cfg = getConfig();
+  return cfg.filter.confidenceLevel;
 };
 
 const getAnalysisTimeout = (): number => {
   const config = vscode.workspace.getConfiguration("dotnetprune");
   return config.get<number>("analysisTimeout", 300000);
-};
-
-type Finding = {
-  Project: string;
-  Solution?: string;
-  FilePath: string;
-  FilePathDisplay: string;
-  DisplayName: string;
-  ProjectFilePath: string;
-  Line: number;
-  SymbolKind: string;
-  ContainingType: string;
-  SymbolName: string;
-  Accessibility: string;
-  Remarks: string;
-  confidence?: number;
-  severity?: "error" | "warning" | "information" | "hint";
-  Icon: string;
-  referenceCount?: number;
-  references?: Array<{
-    filePath: string;
-    line: number;
-    column?: number;
-    type: "direct" | "base" | "delegate" | "possible";
-    context?: string;
-  }>;
-};
-
-type MetricsData = {
-  totalUnused: number;
-  filesAffected: number;
-  bySymbolKind: Record<string, number>;
-  byProject: Record<string, number>;
-  lastAnalyzed?: string;
 };
 
 export function activate(context: vscode.ExtensionContext) {
@@ -100,13 +68,19 @@ export function activate(context: vscode.ExtensionContext) {
     showCollapseAll: true,
     canSelectMany: true,
   });
+  treeView.onDidChangeSelection((e) => {
+    if (e.selection.length === 1 && e.selection[0] instanceof FindingTreeItem) {
+      const item = e.selection[0] as FindingTreeItem;
+      provider.openFinding(item.finding);
+    }
+  });
   const metricsTreeView = vscode.window.createTreeView("dotnetprune-metrics", {
     treeDataProvider: metricsProvider,
     showCollapseAll: true,
   });
 
   // Package inventory view (Phase 1 read-only)
-  const packageProvider = new PackageInventoryProvider(context);
+  const packageProvider = new PackageInventoryProvider();
   const packageTreeView = vscode.window.createTreeView(
     "dotnetprune-packages",
     {
@@ -621,7 +595,7 @@ async function exportLastPruneReport(): Promise<void> {
   }
 }
 
-// Helper function to get appropriate icon for symbol kinds
+// Helper function to get appropriate icon for symbol kinds (fallback when backend doesn't provide icon)
 const getIconForSymbolKind = (symbolKind: string): vscode.ThemeIcon => {
   const kind = symbolKind.toLowerCase();
 
@@ -706,19 +680,20 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   private solutionFiles: Map<string, string> = new Map(); // solutionName -> solutionFilePath
   private projectToSolutionMap: Map<string, string> = new Map(); // projectName -> solutionName
   private filter: FindingFilter = new FindingFilter();
-  private ignoredFindings: Set<string> = new Set(); // Set of finding IDs to ignore
   private diagnosticProvider?: DiagnosticProvider;
   private codeActionsProvider?: CodeActionsProvider;
   private decorator?: InlineDecorator;
-  private isAnalysisRunning = false; // Run-lock to prevent overlapping analysis
+  private isAnalysisRunning = false;
+  private analysisQueue: Promise<void> = Promise.resolve();
   private fileCache?: FileHashCache; // Cache for incremental analysis
+  private pathResolver: PathResolver; // Consolidated path resolution
+  private groupByType: boolean = false;
 
   constructor(private context: vscode.ExtensionContext) {
-    // Load ignored findings from workspace state
-    const ignored = context.workspaceState.get<string[]>("ignoredFindings", []);
-    this.ignoredFindings = new Set(ignored);
     // Initialize file hash cache for incremental analysis
     this.fileCache = new FileHashCache(getWorkspaceRootPath());
+    // Initialize path resolver
+    this.pathResolver = getOrCreatePathResolver(getWorkspaceRootPath());
   }
 
   setProviders(
@@ -732,8 +707,43 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   getAllFindings(): Finding[] {
-    // Return a shallow copy to prevent external mutation of internal state
     return this.allFindings.slice();
+  }
+
+  getFindingId(finding: Finding): string {
+    return `${finding.FilePath}:${finding.Line}:${finding.SymbolName}`;
+  }
+
+  async bulkIgnore(): Promise<void> {
+    const selected = vscode.window.activeTextEditor?.selection;
+    if (!selected) return;
+    const selectedFindings = this.findings.filter(f => 
+      f.FilePath === vscode.window.activeTextEditor?.document.uri.fsPath &&
+      f.Line >= selected.start.line + 1 &&
+      f.Line <= selected.end.line + 1
+    );
+    for (const f of selectedFindings) {
+      this.filter.addIgnored(f);
+    }
+    this.applyFilters();
+    await this.context.workspaceState.update("ignoredFindings", Array.from(this.filter.getIgnoredFindings()));
+  }
+
+  async bulkDelete(): Promise<void> {
+    const selected = vscode.window.activeTextEditor?.selection;
+    if (!selected) return;
+    
+    // Get FindingTreeItem from the tree view
+    const selectedTreeItems = await vscode.commands.executeCommand<FindingTreeItem[]>(
+      'vscode.executeTreeItemPicker'
+    );
+    
+    if (!selectedTreeItems || selectedTreeItems.length === 0) {
+      vscode.window.showWarningMessage("DotNetPrune: No findings selected.");
+      return;
+    }
+    
+    await this.deleteFindings(selectedTreeItems);
   }
 
   refresh(): void {
@@ -765,6 +775,14 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   async runAnalysisAndRefresh(silent: boolean = false): Promise<void> {
+    // Queue analysis - wait for any in-progress analysis to complete first
+    this.analysisQueue = this.analysisQueue.then(async () => {
+      await this.performAnalysis(silent);
+    });
+    await this.analysisQueue;
+  }
+
+  private async performAnalysis(silent: boolean): Promise<void> {
     // Workspace trust guard
     if (!vscode.workspace.isTrusted) {
       if (!silent) {
@@ -790,28 +808,15 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       vscode.window.showErrorMessage(
         "DotNetPrune: Open a workspace before running analysis."
       );
-      this.appendToOutput("DotNetPrune: Workspace is not trusted. Analysis aborted.", "warning");
-      return;
-    }
-
-    if (this.isAnalysisRunning) {
-      vscode.window.showWarningMessage("DotNetPrune: Analysis already in progress.");
+      this.appendToOutput("DotNetPrune: Workspace is not trusted. Analysis aborted.", "warn");
       return;
     }
 
     this.isAnalysisRunning = true;
     try {
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      if (!workspaceFolders || workspaceFolders.length === 0) {
-        vscode.window.showErrorMessage(
-          "DotNetPrune: Open a workspace before running analysis."
-        );
-        return;
-      }
-
-    // discover solution/csproj files (excluding build folders)
-    const excludedFolders = "**/{bin,debug,obj,release,nuget,bin/**,debug/**,obj/**,release/**,nuget/**}/**";
-    const slnxCandidates = await vscode.workspace.findFiles(
+      // discover solution/csproj files (excluding build folders)
+      const excludedFolders = "**/{bin,debug,obj,release,nuget,bin/**,debug/**,obj/**,release/**,nuget/**}/**";
+      const slnxCandidates = await vscode.workspace.findFiles(
       "**/*.slnx",
       `${excludedFolders},**/node_modules/**`,
       10
@@ -875,20 +880,39 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       return;
     }
 
-    this.isAnalysisRunning = true;
-    try {
-      // Use spawn for better security and control
-      const run = await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: "DotNetPrune:",
-          cancellable: true,
-        },
-        async (progress, token) => {
+    // Use spawn for better security and control
+    const run = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "DotNetPrune:",
+        cancellable: true,
+      },
+      async (progress, token) => {
           progress.report({ message: "Executing DotNet Prune analyzer..." });
 
           return new Promise<boolean>((resolve) => {
-            const child = spawn("dotnet", [dllPath, chosenPath], {
+            const cfg = getConfig();
+            
+            // Build CLI arguments from configuration
+            const cliArgs: string[] = [dllPath, chosenPath];
+            
+            if (cfg.analysis.includePublicSymbols === false) {
+              cliArgs.push("--exclude-public");
+            }
+            if (cfg.analysis.includeInternalSymbols === false) {
+              cliArgs.push("--exclude-internal");
+            }
+            if (cfg.analysis.excludeGeneratedCode === false) {
+              cliArgs.push("--include-generated");
+            }
+            if (cfg.analysis.mode === "strict") {
+              cliArgs.push("--strict");
+            }
+            if (cfg.maxFindings > 0) {
+              cliArgs.push("--max-findings", cfg.maxFindings.toString());
+            }
+
+            const child = spawn("dotnet", cliArgs, {
               cwd: getWorkspaceRootPath(),
               stdio: ["ignore", "pipe", "pipe"],
             });
@@ -935,53 +959,74 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
               stderr += data.toString();
             });
 
-            child.on("close", async (code: number) => {
+            child.on("close", async (_code: number) => {
               // No-op after cancellation to avoid double-resolve and spurious errors
               if (cancelled) return;
               cleanup();
               try {
-                // Check exit code - code 1 means findings detected (success), other codes are errors
-                if (code !== 0 && code !== 1) {
-                  const details = stderr.trim() || `Exit code: ${code}`;
-                  this.appendToOutput(`Analyzer stderr: ${details}`, "warn");
+                // Parse JSON response from stdout
+                const trimmedStdout = stdout.trim();
+                if (!trimmedStdout) {
                   throw new Error(
-                    `Analyzer exited with code ${code}. See Output panel for details.`
+                    "Analyzer produced no output. Ensure a valid .sln or .csproj was selected."
                   );
                 }
 
-                // Log stderr if present
-                if (stderr && stderr.trim().length > 0) {
-                  this.appendToOutput(stderr, "warn");
+                // Parse the structured response
+                interface AnalysisResponse {
+                  version: string;
+                  success: boolean;
+                  findings: any[];
+                  error?: { code: string; message: string; details?: unknown };
+                  metadata?: { analyzedAt: string; durationMs: number; filesScanned: number; symbolsAnalyzed: number };
                 }
 
-                // Parse JSON from stdout - expect clean JSON array
-                const trimmedStdout = stdout.trim();
-                if (!trimmedStdout) {
-                  if (stderr && stderr.trim().length > 0) {
-                    throw new Error(
-                      "Analyzer produced no output. See Output panel for stderr details."
-                    );
-                  } else {
-                    throw new Error(
-                      "Analyzer produced no output. Ensure a valid .sln or .csproj was selected."
-                    );
-                  }
-                }
-
-                // Try to parse as JSON directly
-                let findings: any[];
+                let response: AnalysisResponse;
                 try {
-                  findings = JSON.parse(trimmedStdout);
+                  response = JSON.parse(trimmedStdout);
                 } catch (parseError) {
-                  // Fallback: try to extract JSON array if wrapped in other text
-                  const jsonMatch = trimmedStdout.match(/(\[[\s\S]*\])/);
+                  // Fallback: try to extract JSON object if wrapped in other text
+                  const jsonMatch = trimmedStdout.match(/(\{[\s\S]*\})/);
                   if (!jsonMatch) {
                     this.appendToOutput(`Raw stdout: ${stdout.substring(0, 2000)}`, "debug");
                     throw new Error(
-                      "Invalid output from analyzer. Expected JSON array. See Output panel for details."
+                      "Invalid output from analyzer. Expected JSON object. See Output panel for details."
                     );
                   }
-                  findings = JSON.parse(jsonMatch[1]);
+                  response = JSON.parse(jsonMatch[1]);
+                }
+
+                // Check for structured error - only treat as error if there's an actual error message
+                if (response.error && response.error.message) {
+                  const errorMsg = response.error.message;
+                  this.appendToOutput(`Analyzer error: ${errorMsg}`, "error");
+                  throw new Error(errorMsg);
+                }
+
+                // If success is false with no error, it's just an empty result (no findings)
+                if (response.success === false) {
+                  this.appendToOutput("Analysis complete: no unused code found.", "info");
+                  await this.loadFindingsFromJson([]);
+                  resolve(true);
+                  return;
+                }
+
+                // Log metadata if present
+                if (response.metadata) {
+                  this.appendToOutput(
+                    `Analysis complete: ${response.metadata.filesScanned} files, ${response.metadata.symbolsAnalyzed} symbols in ${response.metadata.durationMs}ms`,
+                    "info"
+                  );
+                }
+
+                const findings = response.findings;
+
+                // Handle case where findings is undefined/null
+                if (!findings) {
+                  this.appendToOutput("Analysis complete: no unused code found.", "info");
+                  await this.loadFindingsFromJson([]);
+                  resolve(true);
+                  return;
                 }
 
                 // Validate findings structure
@@ -1077,12 +1122,16 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   private getDllPath(): string {
-    const cfg = getConfig();
-    if (cfg.analyzerPath && cfg.analyzerPath.trim().length > 0) {
-      return cfg.analyzerPath.trim();
+    try {
+      const cfg = getConfig();
+      if (cfg.analyzerPath && cfg.analyzerPath.trim().length > 0) {
+        return cfg.analyzerPath.trim();
+      }
+      const extensionPath = this.context.extensionPath;
+      return path.join(extensionPath, "dist", "FindUnused", "FindUnused.dll");  
+    } catch (error) {
+      throw error;
     }
-    const extensionPath = this.context.extensionPath;
-    return path.join(extensionPath, "dist", "FindUnused", "FindUnused.dll");
   }
 
   private isValidFilePath(filePath: string): boolean {
@@ -1246,7 +1295,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         // Extract project name from file path if not provided
         let projectName = p.Project ?? p.project ?? "";
         if (!projectName || projectName === "") {
-          projectName = this.extractProjectNameFromPath(resolved);
+          projectName = this.pathResolver.getProjectNameFromPath(resolved);
         } else {
           // If project name contains path separators, extract just the project name
           if (projectName.includes(path.sep)) {
@@ -1261,7 +1310,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         }
 
         // Determine which solution this project belongs to
-        const solution = this.findSolutionForProject(projectName, resolved);
+        const solution = this.pathResolver.getSolutionForFile(resolved) ?? undefined;
 
         return {
           Project: projectName,
@@ -1604,7 +1653,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     if (errors.length > 0) {
       const errorMsg = `Errors during deletion: ${errors.join('; ')}`;
       vscode.window.showWarningMessage(errorMsg);
-      this.appendToOutput(errorMsg, "warning");
+      this.appendToOutput(errorMsg, "warn");
     }
   }
 
@@ -1761,7 +1810,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
   private applyFilters(): void {
     this.findings = this.allFindings.filter((f) =>
-      !this.ignoredFindings.has(this.getFindingId(f)) && this.filter.matches(f)
+      this.filter.matches(f)
     );
     
     this.rebuildGroupedStructure();
@@ -1775,8 +1824,8 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     this.groupedBySolution.clear();
 
     for (const f of this.findings) {
-      const solutionName = f.Solution || this.categorizeByFilePath(f.FilePath);
-      const projectName = f.Project || this.extractProjectNameFromPath(f.FilePath);
+      const solutionName = f.Solution || this.pathResolver.getSolutionNameFromPath(f.FilePath);
+      const projectName = f.Project || this.pathResolver.getProjectNameFromPath(f.FilePath);
 
       if (!this.groupedBySolution.has(solutionName)) {
         this.groupedBySolution.set(solutionName, new Map());
@@ -1839,12 +1888,10 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   }
 
   async ignoreFinding(finding: Finding): Promise<void> {
-    const id = this.getFindingId(finding);
-    this.ignoredFindings.add(id);
-    
+    this.filter.addIgnored(finding);
     await this.context.workspaceState.update(
       "ignoredFindings",
-      Array.from(this.ignoredFindings)
+      Array.from(this.filter.getIgnoredFindings())
     );
     
     this.applyFilters();
@@ -1977,8 +2024,8 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
   private appendToOutput(text: string, level: "error" | "warn" | "info" | "debug" = "info") {
     const cfg = getConfig();
-    const configuredLevel = UnusedTreeProvider.LOG_LEVELS[cfg.logLevel] ?? UnusedTreeProvider.LOG_LEVELS.info;
-    const messageLevel = UnusedTreeProvider.LOG_LEVELS[level];
+    const configuredLevel = LOG_LEVELS[cfg.logLevel] ?? LOG_LEVELS.info;
+    const messageLevel = LOG_LEVELS[level];
 
     if (configuredLevel === 0 || messageLevel > configuredLevel) {
       return;
@@ -2090,12 +2137,6 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
           f,
           vscode.TreeItemCollapsibleState.None
         );
-        ti.command = {
-          command: "dotnetprune.openFinding",
-          title: "Open Finding",
-          arguments: [ti],
-        };
-        // Enhanced tooltip with new properties for better visibility
         const projectInfo = f.ProjectFilePath ? `Project: ${path.basename(f.ProjectFilePath)}` : "";
         const fileInfo = f.FilePathDisplay ? `File: ${f.FilePathDisplay}` : "";
         ti.tooltip = `${f.ContainingType} — ${f.Remarks}\n${projectInfo}\n${fileInfo}`.trim();
@@ -2165,10 +2206,12 @@ class FindingTreeItem extends TreeItemBase {
   ) {
     super(label, state);
     this.contextValue = "finding";
-    // Use symbol kind icon, and incorporate analyzer icon into provided
-    this.iconPath = getIconForSymbolKind(finding.SymbolKind);
+    // Prefer backend-provided icon, fall back to computed icon
     if (finding.Icon) {
+      this.iconPath = new vscode.ThemeIcon(finding.Icon);
       this.label = `${finding.Icon} ${label}`;
+    } else {
+      this.iconPath = getIconForSymbolKind(finding.SymbolKind);
     }
     // The command to open the finding is set by the provider
   }
@@ -2280,12 +2323,12 @@ class MetricsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     return item;
   }
 
-  getParent(element: vscode.TreeItem): Thenable<vscode.TreeItem | undefined> {
+  getParent(_element: vscode.TreeItem): Thenable<vscode.TreeItem | undefined> {
     return Promise.resolve(undefined);
   }
 
   private calculateMetrics(): MetricsData {
-    const findings = this.findingsProvider.getFindings();
+    const findings = this.findingsProvider.getAllFindings();
     const bySymbolKind: Record<string, number> = {};
     const byProject: Record<string, number> = {};
     const uniqueFiles = new Set<string>();

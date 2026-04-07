@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Finding } from "./diagnostics";
+import type { Finding } from "./types";
 
 export class FindingsExporter {
   async exportFindings(findings: Finding[]): Promise<void> {

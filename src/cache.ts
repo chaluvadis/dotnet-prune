@@ -85,7 +85,7 @@ export class FileHashCache {
     return crypto.createHash("sha256").update(content).digest("hex");
   }
 
-  async getChangedFiles(filePaths: string[], analyzerVersion: string): Promise<{ changed: string[]; deleted: string[]; new: string[] }> {
+  async getChangedFiles(filePaths: string[], _analyzerVersion: string): Promise<{ changed: string[]; deleted: string[]; new: string[] }> {
     const changed: string[] = [];
     const deleted: string[] = [];
     const newFiles: string[] = [];
