@@ -79,12 +79,25 @@ type Finding = {
   }>;
 };
 
+type MetricsData = {
+  totalUnused: number;
+  filesAffected: number;
+  bySymbolKind: Record<string, number>;
+  byProject: Record<string, number>;
+  lastAnalyzed?: string;
+};
+
 export function activate(context: vscode.ExtensionContext) {
   const provider = new UnusedTreeProvider(context);
+  const metricsProvider = new MetricsTreeProvider(context, provider);
   const treeView = vscode.window.createTreeView("dotnetprune-findings", {
     treeDataProvider: provider,
     showCollapseAll: true,
     canSelectMany: true,
+  });
+  const metricsTreeView = vscode.window.createTreeView("dotnetprune-metrics", {
+    treeDataProvider: metricsProvider,
+    showCollapseAll: true,
   });
 
   // Package inventory view (Phase 1 read-only)
@@ -135,6 +148,7 @@ export function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand("dotnetprune.runAnalysis", async () => {
       await provider.runAnalysisAndRefresh();
+      metricsProvider.refresh();
     }),
     vscode.commands.registerCommand("dotnetprune.clearFindings", () =>
       provider.clear()
@@ -414,6 +428,12 @@ export function activate(context: vscode.ExtensionContext) {
         });
         if (!sel) return;
         packageProvider.setConfidenceFilter(sel.value);
+      }
+    ),
+    vscode.commands.registerCommand(
+      "dotnetprune.exportMetrics",
+      async () => {
+        await metricsProvider.exportMetrics();
       }
     )
   );
@@ -2037,11 +2057,214 @@ class FindingTreeItem extends TreeItemBase {
   ) {
     super(label, state);
     this.contextValue = "finding";
-    // Use symbol kind icon, and incorporate analyzer icon into label if provided
+    // Use symbol kind icon, and incorporate analyzer icon into provided
     this.iconPath = getIconForSymbolKind(finding.SymbolKind);
     if (finding.Icon) {
       this.label = `${finding.Icon} ${label}`;
     }
     // The command to open the finding is set by the provider
+  }
+}
+
+class MetricsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+  private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined> =
+    new vscode.EventEmitter<vscode.TreeItem | undefined>();
+  readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined> =
+    this._onDidChangeTreeData.event;
+
+  constructor(
+    private context: vscode.ExtensionContext,
+    private findingsProvider: UnusedTreeProvider
+  ) {}
+
+  refresh(): void {
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
+    return element;
+  }
+
+  getChildren(element?: vscode.TreeItem): Thenable<vscode.TreeItem[]> {
+    const metrics = this.calculateMetrics();
+
+    if (metrics.totalUnused === 0) {
+      return Promise.resolve([
+        new MetricsMessageItem(
+          "No metrics available. Run analysis to see metrics.",
+          vscode.TreeItemCollapsibleState.None
+        )
+      ]);
+    }
+
+    if (!element) {
+      const items: vscode.TreeItem[] = [];
+
+      const overviewItem = new MetricsCategoryItem(
+        `Overview (${metrics.totalUnused} unused items, ${metrics.filesAffected} files)`,
+        vscode.TreeItemCollapsibleState.Collapsed,
+        "symbol-property"
+      );
+      overviewItem.description = `${metrics.filesAffected} files`;
+      items.push(overviewItem);
+
+      const symbolKindItem = new MetricsCategoryItem(
+        "By Symbol Kind",
+        vscode.TreeItemCollapsibleState.Collapsed,
+        "symbol-method"
+      );
+      symbolKindItem.description = `${Object.keys(metrics.bySymbolKind).length} types`;
+      items.push(symbolKindItem);
+
+      const projectItem = new MetricsCategoryItem(
+        "By Project",
+        vscode.TreeItemCollapsibleState.Collapsed,
+        "project"
+      );
+      projectItem.description = `${Object.keys(metrics.byProject).length} projects`;
+      items.push(projectItem);
+
+      if (metrics.lastAnalyzed) {
+        const timestampItem = new vscode.TreeItem(`Last analyzed: ${metrics.lastAnalyzed}`);
+        timestampItem.contextValue = "timestamp";
+        items.push(timestampItem);
+      }
+
+      return Promise.resolve(items);
+    }
+
+    if (element instanceof MetricsCategoryItem) {
+      const label = element.label as string;
+      
+      if (label.includes("Overview")) {
+        return Promise.resolve([
+          this.createMetricItem("Total unused items", `${metrics.totalUnused}`),
+          this.createMetricItem("Files affected", `${metrics.filesAffected}`)
+        ]);
+      }
+      
+      if (label.includes("Symbol Kind")) {
+        const sortedKinds = Object.entries(metrics.bySymbolKind).sort((a, b) => b[1] - a[1]);
+        return Promise.resolve(
+          sortedKinds.map(([kind, count]) => 
+            this.createMetricItem(kind, `${count}`)
+          )
+        );
+      }
+      
+      if (label.includes("Project")) {
+        const sortedProjects = Object.entries(metrics.byProject).sort((a, b) => b[1] - a[1]);
+        return Promise.resolve(
+          sortedProjects.map(([project, count]) => 
+            this.createMetricItem(project, `${count}`)
+          )
+        );
+      }
+    }
+
+    return Promise.resolve([]);
+  }
+
+  private createMetricItem(label: string, value: string): vscode.TreeItem {
+    const item = new vscode.TreeItem(`${label}: ${value}`);
+    item.contextValue = "metric-item";
+    item.iconPath = new vscode.ThemeIcon("number");
+    return item;
+  }
+
+  getParent(element: vscode.TreeItem): Thenable<vscode.TreeItem | undefined> {
+    return Promise.resolve(undefined);
+  }
+
+  private calculateMetrics(): MetricsData {
+    const findings = this.findingsProvider.getFindings();
+    const bySymbolKind: Record<string, number> = {};
+    const byProject: Record<string, number> = {};
+    const uniqueFiles = new Set<string>();
+
+    for (const finding of findings) {
+      if (finding.FilePath) {
+        uniqueFiles.add(finding.FilePath);
+      }
+
+      const symbolKind = finding.SymbolKind || "Unknown";
+      bySymbolKind[symbolKind] = (bySymbolKind[symbolKind] || 0) + 1;
+
+      const project = finding.Project || "Unknown";
+      byProject[project] = (byProject[project] || 0) + 1;
+    }
+
+    const lastAnalyzed = findings.length > 0
+      ? new Date().toLocaleString()
+      : undefined;
+
+    return {
+      totalUnused: findings.length,
+      filesAffected: uniqueFiles.size,
+      bySymbolKind,
+      byProject,
+      lastAnalyzed
+    };
+  }
+
+  async exportMetrics(): Promise<void> {
+    const metrics = this.calculateMetrics();
+
+    if (metrics.totalUnused === 0) {
+      vscode.window.showWarningMessage("No metrics to export. Run analysis first.");
+      return;
+    }
+
+    const lines: string[] = [];
+    lines.push("# DotNetPrune Metrics Export");
+    lines.push(`# Generated: ${new Date().toISOString()}`);
+    lines.push("");
+    lines.push("## Overview");
+    lines.push(`- Total unused items: ${metrics.totalUnused}`);
+    lines.push(`- Files affected: ${metrics.filesAffected}`);
+    lines.push("");
+
+    lines.push("## By Symbol Kind");
+    const sortedKinds = Object.entries(metrics.bySymbolKind).sort((a, b) => b[1] - a[1]);
+    for (const [kind, count] of sortedKinds) {
+      lines.push(`- ${kind}: ${count}`);
+    }
+    lines.push("");
+
+    lines.push("## By Project");
+    const sortedProjects = Object.entries(metrics.byProject).sort((a, b) => b[1] - a[1]);
+    for (const [project, count] of sortedProjects) {
+      lines.push(`- ${project}: ${count}`);
+    }
+
+    const doc = await vscode.workspace.openTextDocument({
+      content: lines.join("\n"),
+      language: "markdown"
+    });
+    await vscode.window.showTextDocument(doc, { preview: false });
+
+    vscode.window.showInformationMessage(
+      `DotNetPrune: Exported metrics for ${metrics.totalUnused} items.`
+    );
+  }
+}
+
+class MetricsMessageItem extends vscode.TreeItem {
+  constructor(message: string, state: vscode.TreeItemCollapsibleState) {
+    super(message, state);
+    this.contextValue = "metrics-message";
+    this.iconPath = new vscode.ThemeIcon("info");
+  }
+}
+
+class MetricsCategoryItem extends vscode.TreeItem {
+  constructor(
+    label: string,
+    state: vscode.TreeItemCollapsibleState,
+    iconName: string
+  ) {
+    super(label, state);
+    this.contextValue = "metrics-category";
+    this.iconPath = new vscode.ThemeIcon(iconName);
   }
 }
