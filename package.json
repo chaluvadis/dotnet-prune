@@ -102,6 +102,10 @@
         "title": "DotNetPrune: Clear All Filters"
       },
       {
+        "command": "dotnetprune.toggleGroupByType",
+        "title": "DotNetPrune: Toggle Group by Type"
+      },
+      {
         "command": "dotnetprune.bulkIgnore",
         "title": "DotNetPrune: Bulk Ignore Selected"
       },
@@ -184,6 +188,16 @@
       {
         "command": "dotnetprune.filterPackagesByConfidence",
         "title": "$(filter) Filter by Confidence",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.clearCache",
+        "title": "DotNetPrune: Clear Analysis Cache",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.forceFullAnalysis",
+        "title": "DotNetPrune: Force Full Analysis",
         "category": "DotNetPrune"
       }
     ],
@@ -292,7 +306,17 @@
         "dotnetprune.performance.enableCaching": {
           "type": "boolean",
           "default": true,
-          "description": "Cache analysis results to improve performance. (Reserved for future use \u2014 not yet passed to the analyzer CLI.)"
+          "description": "Cache analysis results to improve performance. (Reserved for future use — not yet passed to the analyzer CLI.)"
+        },
+        "dotnetprune.performance.parallelAnalysis": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable parallel analysis of projects. (Reserved for future use — not yet passed to the analyzer CLI.)"
+        },
+        "dotnetprune.performance.enableIncrementalAnalysis": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable incremental analysis - only re-analyze changed files since last run. Uses file hash comparison to detect changes."
         },
         "dotnetprune.performance.parallelAnalysis": {
           "type": "boolean",
