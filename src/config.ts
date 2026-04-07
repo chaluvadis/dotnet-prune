@@ -22,6 +22,7 @@ export interface DotNetPruneConfig {
   performance: {
     enableCaching: boolean;
     parallelAnalysis: boolean;
+    enableIncrementalAnalysis: boolean;
   };
   integration: {
     enableProblemsPanel: boolean;
@@ -78,6 +79,7 @@ export function getConfig(): DotNetPruneConfig {
     performance: {
       enableCaching: config.get("performance.enableCaching", true),
       parallelAnalysis: config.get("performance.parallelAnalysis", true),
+      enableIncrementalAnalysis: config.get("performance.enableIncrementalAnalysis", true),
     },
     integration: {
       enableProblemsPanel: config.get("integration.enableProblemsPanel", true),

@@ -16,6 +16,7 @@ import {
   CsprojNavigator,
 } from "./packageInventory";
 import { PruneExecutor } from "./pruneExecutor";
+import { FileHashCache, getOrCreateCache, clearGlobalCache } from "./cache";
 
 let outputChannel: vscode.OutputChannel | undefined;
 
@@ -130,6 +131,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("dotnetprune.clearFindings", () =>
       provider.clear()
     ),
+    vscode.commands.registerCommand("dotnetprune.clearCache", () => {
+      clearGlobalCache();
+      vscode.window.showInformationMessage("DotNetPrune: Analysis cache cleared.");
+    }),
+    vscode.commands.registerCommand("dotnetprune.forceFullAnalysis", async () => {
+      clearGlobalCache();
+      await provider.runAnalysisAndRefresh();
+    }),
     vscode.commands.registerCommand(
       "dotnetprune.openFinding",
       async (item: FindingTreeItem) => {
@@ -666,11 +675,14 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   private codeActionsProvider?: CodeActionsProvider;
   private decorator?: InlineDecorator;
   private isAnalysisRunning = false; // Run-lock to prevent overlapping analysis
+  private fileCache?: FileHashCache; // Cache for incremental analysis
 
   constructor(private context: vscode.ExtensionContext) {
     // Load ignored findings from workspace state
     const ignored = context.workspaceState.get<string[]>("ignoredFindings", []);
     this.ignoredFindings = new Set(ignored);
+    // Initialize file hash cache for incremental analysis
+    this.fileCache = new FileHashCache(getWorkspaceRootPath());
   }
 
   setProviders(
@@ -998,6 +1010,23 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       );
 
       if (!run) return;
+
+      // Update file hash cache after successful analysis
+      if (this.fileCache) {
+        const csprojFiles = await vscode.workspace.findFiles(
+          "**/*.csproj",
+          "**/{bin,debug,obj,release}/**",
+          100
+        );
+        const filePaths = csprojFiles.map(f => f.fsPath);
+        const analyzerVersion = "1.0.0"; // Could be read from extension version
+        await this.fileCache.updateCache(filePaths, analyzerVersion);
+        
+        if (!silent) {
+          const cacheSize = this.fileCache.getCacheSize();
+          this.appendToOutput(`Cache updated: ${filePaths.length} files, ${(cacheSize / 1024).toFixed(1)}KB`, "debug");
+        }
+      }
 
       this._onDidChangeTreeData.fire(undefined);
       vscode.window.showInformationMessage(
