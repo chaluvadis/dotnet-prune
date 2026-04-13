@@ -186,6 +186,12 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("dotnetprune.toggleGroupByType", () => {
       provider.toggleGroupByType();
     }),
+    vscode.commands.registerCommand("dotnetprune.toggleViewMode", () => {
+      provider.toggleViewMode();
+    }),
+    vscode.commands.registerCommand("dotnetprune.toggleShowDeletable", () => {
+      provider.toggleShowDeletable();
+    }),
     // Export command
     vscode.commands.registerCommand("dotnetprune.exportFindings", async () => {
       await exporter.exportFindings(provider.getAllFindings());
@@ -688,6 +694,8 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   private fileCache?: FileHashCache; // Cache for incremental analysis
   private pathResolver: PathResolver; // Consolidated path resolution
   private groupByType: boolean = false;
+  private viewMode: "compact" | "full" = "compact";
+  private showOnlyDeletable: boolean = false;
 
   constructor(private context: vscode.ExtensionContext) {
     // Initialize file hash cache for incremental analysis
@@ -1804,13 +1812,15 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
   clearFilters(): void {
     this.filter.clearAll();
+    this.showOnlyDeletable = false;
     this.applyFilters();
     vscode.window.showInformationMessage("DotNetPrune: All filters cleared");
   }
 
   private applyFilters(): void {
     this.findings = this.allFindings.filter((f) =>
-      this.filter.matches(f)
+      this.filter.matches(f) &&
+      (!this.showOnlyDeletable || (f.confidence !== undefined && f.confidence >= 80))
     );
     
     this.rebuildGroupedStructure();
@@ -1856,6 +1866,24 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     this._onDidChangeTreeData.fire(undefined);
     vscode.window.showInformationMessage(
       `DotNetPrune: Group by type ${this.groupByType ? "enabled" : "disabled"}`
+    );
+  }
+
+  toggleViewMode(): void {
+    this.viewMode = this.viewMode === "compact" ? "full" : "compact";
+    this.rebuildGroupedStructure();
+    this._onDidChangeTreeData.fire(undefined);
+    vscode.window.showInformationMessage(
+      `DotNetPrune: View mode set to ${this.viewMode === "compact" ? "Compact (findings-only)" : "Full (all files)"}`
+    );
+  }
+
+  toggleShowDeletable(): void {
+    this.showOnlyDeletable = !this.showOnlyDeletable;
+    this.applyFilters();
+    const count = this.findings.length;
+    vscode.window.showInformationMessage(
+      `DotNetPrune: ${this.showOnlyDeletable ? "Showing only deletable (≥80%)" : "Showing all findings"} — ${count} items`
     );
   }
 
@@ -2096,7 +2124,13 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
       const fileItems: TreeItemBase[] = [];
       for (const [filePath, findings] of files) {
-        // Use DisplayName from findings for better visibility, fallback to relative path
+        const hasDeletable = findings.some(f => f.confidence !== undefined && f.confidence >= 80);
+        const hasMedium = findings.some(f => f.confidence !== undefined && f.confidence >= 50 && f.confidence < 80);
+        
+        if (this.viewMode === "compact" && findings.length === 0) {
+          continue;
+        }
+        
         const displayName = findings.length > 0 && findings[0].DisplayName
           ? findings[0].DisplayName
           : path.basename(filePath);
@@ -2109,12 +2143,20 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
           filePath,
           solution,
           projectName,
-          vscode.TreeItemCollapsibleState.Collapsed
+          vscode.TreeItemCollapsibleState.Collapsed,
+          hasDeletable,
+          hasMedium
         );
-        // Set tooltip to show the full file path display
         fileItem.tooltip = filePathDisplay;
         fileItems.push(fileItem);
       }
+      fileItems.sort((a, b) => {
+        const aFile = a as FileTreeItem;
+        const bFile = b as FileTreeItem;
+        if (aFile.hasDeletable && !bFile.hasDeletable) return -1;
+        if (!aFile.hasDeletable && bFile.hasDeletable) return 1;
+        return 0;
+      });
       return Promise.resolve(fileItems);
     }
 
@@ -2184,17 +2226,32 @@ class ProjectTreeItem extends TreeItemBase {
 }
 
 class FileTreeItem extends TreeItemBase {
+  public readonly hasDeletable: boolean = false;
+  public readonly hasMedium: boolean = false;
+  
   constructor(
     public readonly label: string,
     public readonly filePath: string,
     public readonly solutionName: string,
     public readonly projectName: string,
-    state: vscode.TreeItemCollapsibleState
+    state: vscode.TreeItemCollapsibleState,
+    hasDeletable: boolean = false,
+    hasMedium: boolean = false
   ) {
     super(label, state);
     this.contextValue = "file";
-    this.iconPath = path.extname(filePath).toLowerCase() === '.cs' ? new vscode.ThemeIcon("file-code") : new vscode.ThemeIcon("file");
-    // open on double click? handled by child items commands
+    this.hasDeletable = hasDeletable;
+    this.hasMedium = hasMedium;
+    
+    if (hasDeletable) {
+      this.iconPath = new vscode.ThemeIcon("file-code");
+      this.label = `$(warning) ${label}`;
+    } else if (hasMedium) {
+      this.iconPath = new vscode.ThemeIcon("file-code");
+      this.label = `$(circle-outline) ${label}`;
+    } else {
+      this.iconPath = path.extname(filePath).toLowerCase() === '.cs' ? new vscode.ThemeIcon("file-code") : new vscode.ThemeIcon("file");
+    }
   }
 }
 
@@ -2206,14 +2263,30 @@ class FindingTreeItem extends TreeItemBase {
   ) {
     super(label, state);
     this.contextValue = "finding";
-    // Prefer backend-provided icon, fall back to computed icon
+    const confidence = finding.confidence;
+    const isDeletable = confidence !== undefined && confidence >= 80;
+    const isMedium = confidence !== undefined && confidence >= 50 && confidence < 80;
+    
     if (finding.Icon) {
       this.iconPath = new vscode.ThemeIcon(finding.Icon);
-      this.label = `${finding.Icon} ${label}`;
+    } else if (isDeletable) {
+      this.iconPath = new vscode.ThemeIcon("trash");
+      this.label = `$(trash) ${label}`;
+    } else if (isMedium) {
+      this.iconPath = new vscode.ThemeIcon("warning");
+      this.label = `$(warning) ${label}`;
     } else {
       this.iconPath = getIconForSymbolKind(finding.SymbolKind);
     }
-    // The command to open the finding is set by the provider
+    
+    if (confidence !== undefined) {
+      this.description = `Ln ${finding.Line} (${confidence}%)`;
+      if (isDeletable) {
+        this.description += " [Deletable]";
+      }
+    } else {
+      this.description = `Ln ${finding.Line}`;
+    }
   }
 }
 

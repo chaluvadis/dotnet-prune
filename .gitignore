@@ -14,3 +14,4 @@ test-project/
 .DS_Store
 temp_vsix
 *.lscache
+tsconfig.tsbuildinfo

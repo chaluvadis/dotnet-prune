@@ -77,6 +77,16 @@
         "title": "DotNetPrune: Toggle Group by Type"
       },
       {
+        "command": "dotnetprune.toggleViewMode",
+        "title": "$(layout-panel) Toggle Compact/Full View",
+        "category": "DotNetPrune"
+      },
+      {
+        "command": "dotnetprune.toggleShowDeletable",
+        "title": "$(trash) Show Only Deletable",
+        "category": "DotNetPrune"
+      },
+      {
         "command": "dotnetprune.bulkIgnore",
         "title": "DotNetPrune: Bulk Ignore Selected"
       },
@@ -449,6 +459,16 @@
           "command": "dotnetprune.toggleGroupByType",
           "when": "view == dotnetprune-findings",
           "group": "navigation@4"
+        },
+        {
+          "command": "dotnetprune.toggleViewMode",
+          "when": "view == dotnetprune-findings",
+          "group": "navigation@5"
+        },
+        {
+          "command": "dotnetprune.toggleShowDeletable",
+          "when": "view == dotnetprune-findings",
+          "group": "1_filters@5"
         },
         {
           "command": "dotnetprune.analyzePackages",
