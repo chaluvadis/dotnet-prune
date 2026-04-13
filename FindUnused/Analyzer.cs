@@ -24,13 +24,13 @@ public static class Analyzer
             finding.Accessibility,
             finding.SymbolKind,
             hasReferences);
-        
-        finding.confidence = confidence;
-        finding.severity = FindingMetrics.CalculateSeverity(
+
+        finding.Confidence = confidence;
+        finding.Severity = FindingMetrics.CalculateSeverity(
             finding.Accessibility,
             finding.SymbolKind,
             confidence);
-        
+
         if (string.IsNullOrEmpty(finding.Icon))
         {
             finding.Icon = FindingMetrics.GetIconForSymbolKind(finding.SymbolKind);
@@ -332,7 +332,7 @@ public static class Analyzer
                 DeclaredProject = declaredProject,
                 FallbackProject = fallbackProject,
                 Icon = icon,
-                Confidence = CalculateConfidence(SymbolKindMethod, method.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), method.ExplicitInterfaceImplementations.Any())
+                Confidence = CalculateConfidence(SymbolKindMethod, method.DeclaredAccessibility.ToString(), false, IsInTestFile(GetSyntaxTree(doc)), method.ExplicitInterfaceImplementations.Any())
             });
             EnrichFinding(findings[^1], method, false);
             progress?.Report($"    Unused method: {type.ToDisplayString()}.{method.Name} [{method.DeclaredAccessibility}] at {filePathDisplay}:{line}");
@@ -408,7 +408,7 @@ public static class Analyzer
                     DeclaredProject = declaredProject,
                     FallbackProject = fallbackProject,
                     Icon = icon,
-                    Confidence = CalculateConfidence("parameter", method.DeclaredAccessibility.ToString(), true, IsInTestFile(doc?.SyntaxTree), false)
+                    Confidence = CalculateConfidence("parameter", method.DeclaredAccessibility.ToString(), true, IsInTestFile(GetSyntaxTree(doc)), false)
                 });
                 EnrichFinding(findings[^1], param, false);
                 progress?.Report($"      Unused parameter: {method.ToDisplayString()} :: {param.Name} at {filePathDisplay}:{pline}");
@@ -487,7 +487,7 @@ public static class Analyzer
                 DeclaredProject = declaredProject,
                 FallbackProject = fallbackProject,
                 Icon = icon,
-                Confidence = CalculateConfidence("property", prop.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), prop.ExplicitInterfaceImplementations.Any())
+                Confidence = CalculateConfidence("property", prop.DeclaredAccessibility.ToString(), false, IsInTestFile(GetSyntaxTree(doc)), prop.ExplicitInterfaceImplementations.Any())
             });
             EnrichFinding(findings[^1], prop, false);
             progress?.Report($"    Unused property: {type.ToDisplayString()}.{prop.Name} [{prop.DeclaredAccessibility}] at {filePathDisplay}:{line}");
@@ -564,7 +564,7 @@ public static class Analyzer
                 DeclaredProject = declaredProject,
                 FallbackProject = fallbackProject,
                 Icon = icon,
-                Confidence = CalculateConfidence("field", field.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), false)
+                Confidence = CalculateConfidence("field", field.DeclaredAccessibility.ToString(), false, IsInTestFile(GetSyntaxTree(doc)), false)
             });
             EnrichFinding(findings[^1], field, false);
             progress?.Report($"    Unused field: {type.ToDisplayString()}.{field.Name} [{field.DeclaredAccessibility}] at {filePathDisplay}:{line}");
@@ -671,7 +671,7 @@ public static class Analyzer
                 DeclaredProject = declaredProject,
                 FallbackProject = fallbackProject,
                 Icon = icon,
-                Confidence = CalculateConfidence(kind, type.DeclaredAccessibility.ToString(), false, IsInTestFile(doc?.SyntaxTree), false)
+                Confidence = CalculateConfidence(kind, type.DeclaredAccessibility.ToString(), false, IsInTestFile(GetSyntaxTree(doc)), false)
             });
             EnrichFinding(findings[^1], type, false);
             progress?.Report($"    Unused type: {type.ToDisplayString()} (Kind={kind}) [{type.DeclaredAccessibility}] at {filePathDisplay}:{line}");
@@ -874,6 +874,12 @@ public static class Analyzer
             confidence -= 15;
 
         return Math.Clamp(confidence, 0, 100);
+    }
+
+    private static SyntaxTree? GetSyntaxTree(Document? doc)
+    {
+        if (doc == null) return null;
+        return doc.TryGetSyntaxTree(out var tree) ? tree : null;
     }
 
     private static bool IsInTestFile(SyntaxTree? tree)
