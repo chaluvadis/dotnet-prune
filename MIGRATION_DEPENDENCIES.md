@@ -5,8 +5,8 @@
 | Package | Old Version | New Version | Action | Reason | Breaking Changes |
 |---------|------------|-------------|--------|--------|-----------------|
 | Microsoft.Build.Locator | 1.11.2 | 1.11.2 | Keep | Already latest stable | None |
-| Microsoft.CodeAnalysis.Workspaces.MSBuild | 5.6.0 | 5.6.0 | Keep | Already latest stable for .NET 10 | None |
-| Microsoft.CodeAnalysis.CSharp.Workspaces | 5.6.0 | 5.6.0 | Keep | Already latest stable for .NET 10 | None |
+| Microsoft.CodeAnalysis.Workspaces.MSBuild | 5.3.0 | 5.6.0 | Upgrade | Latest stable for .NET 10 | None |
+| Microsoft.CodeAnalysis.CSharp.Workspaces | 5.3.0 | 5.6.0 | Upgrade | Latest stable for .NET 10 | None |
 
 ## npm Dependencies
 

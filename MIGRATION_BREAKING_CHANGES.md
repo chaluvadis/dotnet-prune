@@ -26,6 +26,9 @@ This migration does not introduce any breaking changes to the extension's public
   - Behavior is identical; only the import and call site changed
 - Manual stream hashing replaced with `readFile` + `crypto.createHash`
   - Produces identical SHA-256 hashes; implementation simplified
+- `Program.cs` CLI argument parsing fixed to support extension flags (`--exclude-public`, `--exclude-internal`, `--include-generated`, `--strict`, `--max-findings`)
+  - Previously, any argument other than the target path caused the analyzer to exit with an error
+  - This was a pre-existing bug that made those settings non-functional when changed from defaults
 
 ### No Breaking Changes Summary
 ```text

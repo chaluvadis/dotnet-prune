@@ -13,7 +13,7 @@
 | VS Code Engine | ^1.110.0 |
 | Node.js Runtime | v26.1.0 |
 | Package Manager | pnpm |
-| NuGet Packages | Microsoft.Build.Locator 1.11.2, Microsoft.CodeAnalysis.Workspaces.MSBuild 5.6.0, Microsoft.CodeAnalysis.CSharp.Workspaces 5.6.0 |
+| NuGet Packages | Microsoft.Build.Locator 1.11.2, Microsoft.CodeAnalysis.Workspaces.MSBuild 5.3.0, Microsoft.CodeAnalysis.CSharp.Workspaces 5.3.0 |
 
 ## 2. Architecture
 
@@ -44,8 +44,9 @@ The repository contains a VS Code extension (`dotnet-prune-vscode`) that wraps a
 
 ### Phase 4: .NET Code Modernization
 - Cleaned up extraneous blank lines in `Utilities.cs`
-- .NET packages were already at latest stable versions
-- No deprecated .NET APIs were found
+- Fixed CLI argument parsing in `Program.cs` to support extension flags (`--exclude-public`, `--exclude-internal`, `--include-generated`, `--strict`, `--max-findings`)
+- Upgraded Roslyn packages from 5.3.0 to 5.6.0
+- Verified analyzer functionality with Roslyn 5.6.0 against test solution
 
 ### Phase 5: Documentation
 - Created migration documentation files
@@ -53,10 +54,9 @@ The repository contains a VS Code extension (`dotnet-prune-vscode`) that wraps a
 ## 4. Dependency Strategy
 
 ### NuGet
-No upgrades required. All packages are at latest stable:
-- Microsoft.Build.Locator 1.11.2 (latest stable)
-- Microsoft.CodeAnalysis.Workspaces.MSBuild 5.6.0 (latest stable for .NET 10)
-- Microsoft.CodeAnalysis.CSharp.Workspaces 5.6.0 (latest stable for .NET 10)
+- Microsoft.Build.Locator 1.11.2 (latest stable, no change)
+- Microsoft.CodeAnalysis.Workspaces.MSBuild 5.6.0 (upgraded from 5.3.0)
+- Microsoft.CodeAnalysis.CSharp.Workspaces 5.6.0 (upgraded from 5.3.0)
 
 ### npm
 - typescript: 7.0.2 (already latest stable)

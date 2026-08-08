@@ -14,6 +14,13 @@ No .NET API changes were required. All code already uses modern .NET 10 / C# 12+
 Minor cleanup:
 - `Utilities.cs`: Removed extraneous blank lines (no API change)
 
+### CLI argument parsing fix
+- **Old pattern**: `if (args.Length != 1) { error; exit; }` — rejected all extension flags
+- **New pattern**: Iterate args, parse `--exclude-public`, `--exclude-internal`, `--include-generated`, `--strict`, `--max-findings`, pass config to `RunAnalysisAsync`
+- **Reason**: The VS Code extension passes these flags via `spawn("dotnet", cliArgs, ...)`. The previous implementation rejected them, making those settings non-functional.
+- **Breaking change**: None (usage string now shows help text instead of silent rejection)
+- **Files affected**: `FindUnused/Program.cs`
+
 ## TypeScript 7 API/Language Changes
 
 ### catch clause typing
