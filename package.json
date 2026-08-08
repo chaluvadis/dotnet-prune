@@ -2,7 +2,7 @@
   "name": "dotnet-prune-vscode",
   "displayName": "DotNet Prune",
   "description": "Visualize unused .NET code in VS Code with hierarchical tree view showing findings organized by solution, project, and files.",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "publisher": "nomad-in-code",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -15,7 +15,7 @@
     "url": "https://github.com/chaluvadis/dotnet-prune/issues"
   },
   "engines": {
-    "vscode": "^1.110.0"
+    "vscode": "^1.125.0"
   },
   "categories": [
     "Linters"
@@ -26,160 +26,208 @@
     "commands": [
       {
         "command": "dotnetprune.refresh",
-        "title": "DotNetPrune: Refresh Findings"
+        "title": "Refresh Findings",
+        "category": "DotNetPrune",
+        "icon": "$(refresh)"
       },
       {
         "command": "dotnetprune.runAnalysis",
-        "title": "DotNetPrune: Run Analysis"
+        "title": "Run Analysis",
+        "category": "DotNetPrune",
+        "icon": "$(play)"
       },
       {
         "command": "dotnetprune.clearFindings",
-        "title": "DotNetPrune: Clear Findings"
+        "title": "Clear Findings",
+        "category": "DotNetPrune",
+        "icon": "$(clear-all)"
       },
       {
         "command": "dotnetprune.openFinding",
-        "title": "DotNetPrune: Open Finding"
+        "title": "Open Finding",
+        "icon": "$(go-to-file)"
       },
       {
         "command": "dotnetprune.showFindingDetails",
-        "title": "DotNetPrune: Show Finding Details"
+        "title": "Show Details",
+        "category": "DotNetPrune",
+        "icon": "$(info)"
       },
       {
         "command": "dotnetprune.copyFilePath",
-        "title": "Copy File Path"
+        "title": "Copy File Path",
+        "icon": "$(copy)"
       },
       {
         "command": "dotnetprune.copyProjectName",
-        "title": "Copy Project Name"
+        "title": "Copy Project Name",
+        "icon": "$(copy)"
       },
       {
         "command": "dotnetprune.filterBySymbolKind",
-        "title": "DotNetPrune: Filter by Symbol Kind"
+        "title": "Filter by Type",
+        "category": "DotNetPrune",
+        "icon": "$(filter)"
       },
       {
         "command": "dotnetprune.filterByConfidence",
-        "title": "DotNetPrune: Filter by Confidence"
+        "title": "Filter by Confidence",
+        "category": "DotNetPrune",
+        "icon": "$(filter)"
       },
       {
         "command": "dotnetprune.filterByProject",
-        "title": "DotNetPrune: Filter by Project"
+        "title": "Filter by Project",
+        "category": "DotNetPrune",
+        "icon": "$(filter)"
       },
       {
         "command": "dotnetprune.searchFindings",
-        "title": "DotNetPrune: Search Findings"
+        "title": "Search Findings",
+        "category": "DotNetPrune",
+        "icon": "$(search)"
       },
       {
         "command": "dotnetprune.clearFilters",
-        "title": "DotNetPrune: Clear All Filters"
+        "title": "Clear Filters",
+        "category": "DotNetPrune",
+        "icon": "$(clear-all)"
       },
       {
         "command": "dotnetprune.toggleGroupByType",
-        "title": "DotNetPrune: Toggle Group by Type"
+        "title": "Group by Type",
+        "category": "DotNetPrune",
+        "icon": "$(files)"
       },
       {
         "command": "dotnetprune.toggleViewMode",
-        "title": "$(layout-panel) Toggle Compact/Full View",
-        "category": "DotNetPrune"
+        "title": "Toggle Compact/Full View",
+        "category": "DotNetPrune",
+        "icon": "$(list-flat)"
       },
       {
         "command": "dotnetprune.toggleShowDeletable",
-        "title": "$(trash) Show Only Deletable",
-        "category": "DotNetPrune"
+        "title": "Show Only Deletable",
+        "category": "DotNetPrune",
+        "icon": "$(trash)"
       },
       {
         "command": "dotnetprune.bulkIgnore",
-        "title": "DotNetPrune: Bulk Ignore Selected"
+        "title": "Bulk Ignore",
+        "category": "DotNetPrune",
+        "icon": "$(circle-slash)"
       },
       {
         "command": "dotnetprune.bulkDelete",
-        "title": "DotNetPrune: Bulk Delete Selected"
+        "title": "Bulk Delete",
+        "category": "DotNetPrune",
+        "icon": "$(trash)"
       },
       {
         "command": "dotnetprune.exportFindings",
-        "title": "DotNetPrune: Export Findings"
+        "title": "Export Findings",
+        "category": "DotNetPrune",
+        "icon": "$(export)"
       },
       {
         "command": "dotnetprune.ignoreFinding",
-        "title": "Ignore This Finding"
+        "title": "Ignore Finding",
+        "icon": "$(circle-slash)"
       },
       {
         "command": "dotnetprune.deleteFinding",
-        "title": "Delete Unused Code"
+        "title": "Delete Unused",
+        "icon": "$(trash)"
       },
       {
         "command": "dotnetprune.analyzePackages",
-        "title": "$(search) Analyze Packages",
-        "category": "DotNetPrune"
+        "title": "Analyze Packages",
+        "category": "DotNetPrune",
+        "icon": "$(search)"
       },
       {
         "command": "dotnetprune.refreshPackages",
-        "title": "$(refresh) Refresh",
-        "category": "DotNetPrune"
+        "title": "Refresh Packages",
+        "category": "DotNetPrune",
+        "icon": "$(refresh)"
       },
       {
         "command": "dotnetprune.clearPackages",
-        "title": "$(clear-all) Clear",
-        "category": "DotNetPrune"
+        "title": "Clear Packages",
+        "category": "DotNetPrune",
+        "icon": "$(clear-all)"
       },
       {
         "command": "dotnetprune.previewPruneProject",
-        "title": "$(eye) Preview Prune",
-        "category": "DotNetPrune"
+        "title": "Preview Prune",
+        "category": "DotNetPrune",
+        "icon": "$(eye)"
       },
       {
         "command": "dotnetprune.applyPruneProject",
-        "title": "$(trash) Apply Prune",
-        "category": "DotNetPrune"
+        "title": "Apply Prune",
+        "category": "DotNetPrune",
+        "icon": "$(trash)"
       },
       {
         "command": "dotnetprune.previewPrunePackage",
-        "title": "$(eye) Preview Remove",
-        "category": "DotNetPrune"
+        "title": "Preview Remove",
+        "category": "DotNetPrune",
+        "icon": "$(eye)"
       },
       {
         "command": "dotnetprune.applyPrunePackage",
-        "title": "$(trash) Remove Package",
-        "category": "DotNetPrune"
+        "title": "Remove Package",
+        "category": "DotNetPrune",
+        "icon": "$(trash)"
       },
       {
         "command": "dotnetprune.exportPruneReport",
-        "title": "$(export) Export Prune Report",
-        "category": "DotNetPrune"
+        "title": "Export Report",
+        "category": "DotNetPrune",
+        "icon": "$(export)"
       },
       {
         "command": "dotnetprune.suppressPackage",
-        "title": "$(circle-slash) Don't Suggest Again",
-        "category": "DotNetPrune"
+        "title": "Add to Allowlist",
+        "category": "DotNetPrune",
+        "icon": "$(circle-slash)"
       },
       {
         "command": "dotnetprune.openAllowlistConfig",
-        "title": "$(edit) Open Allowlist Config",
-        "category": "DotNetPrune"
+        "title": "Edit Allowlist",
+        "category": "DotNetPrune",
+        "icon": "$(edit)"
       },
       {
         "command": "dotnetprune.goToPackageReference",
-        "title": "$(go-to-file) Go to PackageReference",
-        "category": "DotNetPrune"
+        "title": "Go to Reference",
+        "category": "DotNetPrune",
+        "icon": "$(go-to-file)"
       },
       {
         "command": "dotnetprune.reanalyzePackages",
-        "title": "$(sync) Re-analyze Now",
-        "category": "DotNetPrune"
+        "title": "Re-analyze",
+        "category": "DotNetPrune",
+        "icon": "$(sync)"
       },
       {
         "command": "dotnetprune.filterPackagesByConfidence",
-        "title": "$(filter) Filter by Confidence",
-        "category": "DotNetPrune"
+        "title": "Filter by Confidence",
+        "category": "DotNetPrune",
+        "icon": "$(filter)"
       },
       {
         "command": "dotnetprune.clearCache",
-        "title": "DotNetPrune: Clear Analysis Cache",
-        "category": "DotNetPrune"
+        "title": "Clear Cache",
+        "category": "DotNetPrune",
+        "icon": "$(clear-all)"
       },
       {
         "command": "dotnetprune.forceFullAnalysis",
-        "title": "DotNetPrune: Force Full Analysis",
-        "category": "DotNetPrune"
+        "title": "Force Full Analysis",
+        "category": "DotNetPrune",
+        "icon": "$(bug)"
       }
     ],
     "configuration": {
@@ -413,154 +461,184 @@
         {
           "command": "dotnetprune.runAnalysis",
           "when": "view == dotnetprune-findings",
-          "group": "navigation@1"
+          "group": "navigation@1",
+          "icon": "$(play)"
         },
         {
           "command": "dotnetprune.searchFindings",
           "when": "view == dotnetprune-findings",
-          "group": "navigation@2"
+          "group": "navigation@2",
+          "icon": "$(search)"
         },
         {
           "command": "dotnetprune.exportFindings",
           "when": "view == dotnetprune-findings",
-          "group": "navigation@3"
+          "group": "navigation@3",
+          "icon": "$(export)"
         },
         {
           "command": "dotnetprune.clearFilters",
           "when": "view == dotnetprune-findings",
-          "group": "1_filters@1"
+          "group": "1_filters@1",
+          "icon": "$(clear-all)"
         },
         {
           "command": "dotnetprune.filterBySymbolKind",
           "when": "view == dotnetprune-findings",
-          "group": "1_filters@2"
+          "group": "1_filters@2",
+          "icon": "$(symbol-class)"
         },
         {
           "command": "dotnetprune.filterByConfidence",
           "when": "view == dotnetprune-findings",
-          "group": "1_filters@3"
+          "group": "1_filters@3",
+          "icon": "$(pulse)"
         },
         {
           "command": "dotnetprune.filterByProject",
           "when": "view == dotnetprune-findings",
-          "group": "1_filters@4"
+          "group": "1_filters@4",
+          "icon": "$(file-submodule)"
         },
         {
           "command": "dotnetprune.clearCache",
           "when": "view == dotnetprune-findings",
-          "group": "2_utilities@1"
+          "group": "2_utilities@1",
+          "icon": "$(clear-all)"
         },
         {
           "command": "dotnetprune.forceFullAnalysis",
           "when": "view == dotnetprune-findings",
-          "group": "2_utilities@2"
+          "group": "2_utilities@2",
+          "icon": "$(bug)"
         },
         {
           "command": "dotnetprune.toggleGroupByType",
           "when": "view == dotnetprune-findings",
-          "group": "navigation@4"
+          "group": "navigation@4",
+          "icon": "$(file-tree)"
         },
         {
           "command": "dotnetprune.toggleViewMode",
           "when": "view == dotnetprune-findings",
-          "group": "navigation@5"
+          "group": "navigation@5",
+          "icon": "$(list-flat)"
         },
         {
           "command": "dotnetprune.toggleShowDeletable",
           "when": "view == dotnetprune-findings",
-          "group": "1_filters@5"
+          "group": "1_filters@5",
+          "icon": "$(trash)"
         },
         {
           "command": "dotnetprune.analyzePackages",
           "when": "view == dotnetprune-packages",
-          "group": "navigation@1"
+          "group": "navigation@1",
+          "icon": "$(search)"
         },
         {
           "command": "dotnetprune.refreshPackages",
           "when": "view == dotnetprune-packages",
-          "group": "navigation@2"
+          "group": "navigation@2",
+          "icon": "$(refresh)"
         },
         {
           "command": "dotnetprune.clearPackages",
           "when": "view == dotnetprune-packages",
-          "group": "navigation@3"
+          "group": "navigation@3",
+          "icon": "$(clear-all)"
         },
         {
           "command": "dotnetprune.exportPruneReport",
           "when": "view == dotnetprune-packages",
-          "group": "navigation@4"
+          "group": "navigation@4",
+          "icon": "$(export)"
         },
         {
           "command": "dotnetprune.filterPackagesByConfidence",
           "when": "view == dotnetprune-packages",
-          "group": "navigation@5"
+          "group": "navigation@5",
+          "icon": "$(pulse)"
         },
         {
           "command": "dotnetprune.openAllowlistConfig",
           "when": "view == dotnetprune-packages",
-          "group": "1_config@1"
+          "group": "1_config@1",
+          "icon": "$(edit)"
         }
       ],
       "view/item/context": [
         {
           "command": "dotnetprune.copyFilePath",
           "when": "view == dotnetprune-findings && viewItem == file",
-          "group": "7_modification@1"
+          "group": "7_modification@1",
+          "icon": "$(copy)"
         },
         {
           "command": "dotnetprune.copyProjectName",
           "when": "view == dotnetprune-findings && viewItem == project",
-          "group": "7_modification@1"
+          "group": "7_modification@1",
+          "icon": "$(copy)"
         },
         {
           "command": "dotnetprune.ignoreFinding",
           "when": "view == dotnetprune-findings && viewItem == finding",
-          "group": "2_workspace@1"
+          "group": "2_workspace@1",
+          "icon": "$(circle-slash)"
         },
         {
           "command": "dotnetprune.deleteFinding",
           "when": "view == dotnetprune-findings && viewItem == finding",
-          "group": "2_workspace@2"
+          "group": "2_workspace@2",
+          "icon": "$(trash)"
         },
         {
           "command": "dotnetprune.previewPruneProject",
           "when": "view == dotnetprune-packages && viewItem =~ /^pkg-group-unused/",
-          "group": "1_prune@1"
+          "group": "1_prune@1",
+          "icon": "$(eye)"
         },
         {
           "command": "dotnetprune.applyPruneProject",
           "when": "view == dotnetprune-packages && viewItem == pkg-group-unused-pruneable",
-          "group": "1_prune@2"
+          "group": "1_prune@2",
+          "icon": "$(trash)"
         },
         {
           "command": "dotnetprune.previewPrunePackage",
           "when": "view == dotnetprune-packages && viewItem =~ /^pkg-unused-(high|medium)$/",
-          "group": "1_prune@1"
+          "group": "1_prune@1",
+          "icon": "$(eye)"
         },
         {
           "command": "dotnetprune.applyPrunePackage",
           "when": "view == dotnetprune-packages && viewItem =~ /^pkg-unused-(high|medium)$/",
-          "group": "1_prune@2"
+          "group": "1_prune@2",
+          "icon": "$(trash)"
         },
         {
           "command": "dotnetprune.suppressPackage",
           "when": "view == dotnetprune-packages && viewItem =~ /^pkg-unused/",
-          "group": "2_suppress@1"
+          "group": "2_suppress@1",
+          "icon": "$(circle-slash)"
         },
         {
           "command": "dotnetprune.goToPackageReference",
           "when": "view == dotnetprune-packages && viewItem =~ /^pkg-unused/",
-          "group": "3_navigate@1"
+          "group": "3_navigate@1",
+          "icon": "$(go-to-file)"
         },
         {
           "command": "dotnetprune.goToPackageReference",
           "when": "view == dotnetprune-packages && viewItem == pkg-referenced",
-          "group": "3_navigate@1"
+          "group": "3_navigate@1",
+          "icon": "$(go-to-file)"
         },
         {
           "command": "dotnetprune.showFindingDetails",
           "when": "view == dotnetprune-findings && viewItem == finding",
-          "group": "3_info@1"
+          "group": "3_info@1",
+          "icon": "$(info)"
         }
       ]
     }
@@ -568,14 +646,14 @@
   "scripts": {
     "compile": "tsc --noEmit && node esbuild.js",
     "clean": "rm -rf *.vsix dist",
-    "dotnet:publish": "dotnet publish ./FindUnused/FindUnused.csproj -c Release --output ./dist/FindUnused/",
+    "dotnet:publish": "dotnet publish ./FindUnused/FindUnused.csproj -c Release -p:PublishWithAspNetCoreMaterialLock=false -p:_WarnOnBuildLocatorIssue=false --output ./dist/FindUnused/",
     "package": "pnpm clean && pnpm compile && pnpm dotnet:publish && vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.110.0",
-    "@types/node": "25.6.0",
-    "@biomejs/biome": "^2.4.11",
-    "esbuild": "^0.28.0",
-    "typescript": "^6.0.2"
+    "@types/vscode": "^1.125.0",
+    "@types/node": "26.2.0",
+    "@biomejs/biome": "^2.5.7",
+    "esbuild": "^0.28.1",
+    "typescript": "^7.0.2"
   }
 }

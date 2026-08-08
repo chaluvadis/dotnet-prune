@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 export interface FileHashEntry {
   filePath: string;
@@ -72,13 +73,8 @@ export class FileHashCache {
   }
 
   async computeFileHash(filePath: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const hash = crypto.createHash("sha256");
-      const stream = fs.createReadStream(filePath);
-      stream.on("data", (data) => hash.update(data));
-      stream.on("end", () => resolve(hash.digest("hex")));
-      stream.on("error", reject);
-    });
+    const data = await readFile(filePath);
+    return crypto.createHash("sha256").update(data).digest("hex");
   }
 
   async computeContentHash(content: string): Promise<string> {

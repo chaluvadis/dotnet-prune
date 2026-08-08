@@ -15,3 +15,5 @@ test-project/
 temp_vsix
 *.lscache
 tsconfig.tsbuildinfo
+BuildHost-net472/
+BuildHost-netcore/

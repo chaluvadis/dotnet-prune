@@ -28,19 +28,4 @@ public static class Utilities
 
         return indicators.Any(low.Contains);
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 }
