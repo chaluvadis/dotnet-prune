@@ -1,11 +1,8 @@
 import * as vscode from "vscode";
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { PackagePruneEntry, ProjectPrunePlan } from "./packageInventory";
-
-const execFileAsync = promisify(execFile);
 
 // ─── Outcome Types ────────────────────────────────────────────────────────────
 
@@ -120,7 +117,7 @@ export class PruneExecutor {
       this.log(
         `  [REMOVE] ${pkg.include}${pkg.version ? ` (${pkg.version})` : ""} [${confidence}]`,
       );
-      await execFileAsync("dotnet", [
+      await execFile("dotnet", [
         "remove",
         projectPath,
         "package",
@@ -153,7 +150,7 @@ export class PruneExecutor {
   ): Promise<"success" | "failed"> {
     try {
       this.log("  [RESTORE] Running dotnet restore...");
-      await execFileAsync("dotnet", ["restore", projectPath]);
+      await execFile("dotnet", ["restore", projectPath]);
       this.log("  [RESTORE] Success");
       return "success";
     } catch (err) {
@@ -168,7 +165,7 @@ export class PruneExecutor {
   ): Promise<"success" | "failed"> {
     try {
       this.log("  [BUILD] Running dotnet build...");
-      await execFileAsync("dotnet", ["build", projectPath, "--no-restore"]);
+      await execFile("dotnet", ["build", projectPath, "--no-restore"]);
       this.log("  [BUILD] Success");
       return "success";
     } catch (err) {

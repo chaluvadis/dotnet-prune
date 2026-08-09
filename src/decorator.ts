@@ -90,7 +90,6 @@ export class InlineDecorator {
 
   private createHoverMessage(finding: Finding): vscode.MarkdownString {
     const md = new vscode.MarkdownString();
-    // Restrict trust to only the two commands we embed as links
     md.isTrusted = {
       enabledCommands: [
         "dotnetprune.deleteFindingByLocation",
@@ -112,9 +111,25 @@ export class InlineDecorator {
     }
 
     if (finding.Remarks) {
-      md.appendMarkdown("**Details:** ");
+      md.appendMarkdown("**Why unused:** ");
       md.appendText(finding.Remarks);
       md.appendMarkdown("\n\n");
+    }
+
+    if (finding.confidence !== undefined) {
+      let reason = "";
+      if (finding.confidence >= 80) {
+        reason = "No references found anywhere in the solution.";
+      } else if (finding.confidence >= 50) {
+        reason = "Few or indirect references found; may be used externally or via reflection.";
+      } else {
+        reason = "Some references exist, but analysis confidence is low.";
+      }
+      md.appendMarkdown(`**Analysis:** ${reason}\n\n`);
+    }
+
+    if (finding.Accessibility === "public") {
+      md.appendMarkdown("**Note:** Public symbols may be used by external assemblies not analyzed here.\n\n");
     }
 
     md.appendMarkdown(`---\n\n`);

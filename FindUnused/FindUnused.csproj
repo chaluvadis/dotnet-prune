@@ -6,10 +6,11 @@
 		<Nullable>enable</Nullable>
 		<LangVersion>preview</LangVersion>
 		<AssemblyName>FindUnused</AssemblyName>
+		<DisableMSBuildAssemblyCopyCheck>true</DisableMSBuildAssemblyCopyCheck>
 	</PropertyGroup>
 	<ItemGroup>
-		<PackageReference Include="Microsoft.Build.Locator" Version="1.10.12" />
-		<PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="5.0.0-2.final" />
-		<PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.0.0-2.final" />
+		<PackageReference Include="Microsoft.Build.Locator" Version="1.11.2" />
+		<PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="5.6.0" />
+		<PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.6.0" />
 	</ItemGroup>
 </Project>
