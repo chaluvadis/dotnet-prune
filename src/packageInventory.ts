@@ -909,7 +909,7 @@ export class PackageInventoryProvider
       vscode.window.showInformationMessage(
         `DotNetPrune: Package analysis complete. ${inventory.projects.length} project(s), ${totalUnused} unused package reference(s) found.`
       );
-      vscode.commands.executeCommand("workbench.view.dotnetprune-views");
+      vscode.commands.executeCommand("workbench.view.extension.dotnetprune-views");
     } finally {
       this.isAnalysisRunning = false;
     }

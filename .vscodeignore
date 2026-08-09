@@ -49,3 +49,4 @@ biome.json
 .kilocodemodes
 FindUnused/
 Directory.Build.props
+tests/
