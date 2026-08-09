@@ -89,6 +89,38 @@ export function activate(context: vscode.ExtensionContext) {
     }
   );
 
+  // Status bar integration — immediate visibility
+  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusBarItem.command = "dotnetprune.runAnalysis";
+  statusBarItem.tooltip = "DotNetPrune: Click to run analysis";
+  context.subscriptions.push(statusBarItem);
+
+  const updateStatusBar = (): void => {
+    const findings = provider.getAllFindings();
+    const count = findings.length;
+    const lastRun = provider.getLastAnalysisTime();
+    const timeStr = lastRun
+      ? new Date(lastRun).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : "never";
+    if (count === 0) {
+      statusBarItem.text = "$(beaker) DotNetPrune: no findings";
+      statusBarItem.backgroundColor = undefined;
+    } else {
+      statusBarItem.text = `$(beaker) DotNetPrune: ${count} finding${count !== 1 ? "s" : ""}`;
+      const hasHigh = findings.some(f => f.confidence !== undefined && f.confidence >= 80);
+      if (hasHigh) {
+        statusBarItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+      } else {
+        statusBarItem.backgroundColor = undefined;
+      }
+    }
+    statusBarItem.tooltip = `Last analysis: ${timeStr}\nClick to re-run analysis`;
+  };
+
+  provider.onDidChangeTreeData(() => updateStatusBar());
+  updateStatusBar();
+  statusBarItem.show();
+
   // Initialize new features
   const diagnosticProvider = new DiagnosticProvider();
   const codeActionsProvider = new CodeActionsProvider();
@@ -121,6 +153,7 @@ export function activate(context: vscode.ExtensionContext) {
     diagnosticProvider,
     codeActionsRegistration,
     decorator,
+    statusBarItem,
     onSaveListener,
     vscode.commands.registerCommand("dotnetprune.refresh", () =>
       provider.refresh()
@@ -696,12 +729,17 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
   private groupByType: boolean = false;
   private viewMode: "compact" | "full" = "compact";
   private showOnlyDeletable: boolean = false;
+  private lastAnalysisTime: number = 0;
 
   constructor(private context: vscode.ExtensionContext) {
     // Initialize file hash cache for incremental analysis
     this.fileCache = new FileHashCache(getWorkspaceRootPath());
     // Initialize path resolver
     this.pathResolver = getOrCreatePathResolver(getWorkspaceRootPath());
+  }
+
+  getLastAnalysisTime(): number {
+    return this.lastAnalysisTime;
   }
 
   setProviders(
@@ -769,6 +807,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
     this.solutionFiles.clear();
     this.projectToSolutionMap.clear();
     this.filter.clearAll();
+    this.lastAnalysisTime = 0;
     this._onDidChangeTreeData.fire(undefined);
 
     // Clear diagnostics and decorations
@@ -1136,6 +1175,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         }
       }
 
+      this.lastAnalysisTime = Date.now();
       this._onDidChangeTreeData.fire(undefined);
       vscode.window.showInformationMessage(
         "DotNetPrune: Analysis completed."
@@ -2094,12 +2134,24 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
 
   getChildren(element?: TreeItemBase): Thenable<TreeItemBase[]> {
     if (!element) {
-      // top-level: solutions
+      // top-level: solutions with finding counts
+      const solutionCounts = new Map<string, number>();
+      for (const [, projects] of this.groupedBySolution) {
+        for (const [, files] of projects) {
+          for (const [, findings] of files) {
+            for (const f of findings) {
+              const solution = this.pathResolver.getSolutionForFile(f.FilePath) ?? "Unknown";
+              solutionCounts.set(solution, (solutionCounts.get(solution) ?? 0) + 1);
+            }
+          }
+        }
+      }
       const items = Array.from(this.groupedBySolution.keys()).map(
         (solution) => {
           const item = new SolutionTreeItem(
             solution,
-            vscode.TreeItemCollapsibleState.Collapsed
+            vscode.TreeItemCollapsibleState.Collapsed,
+            solutionCounts.get(solution) ?? 0
           );
           return item;
         }
@@ -2121,11 +2173,13 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       const projects = this.groupedBySolution.get(solution);
       if (!projects) return Promise.resolve([]);
       const projectItems: TreeItemBase[] = [];
-      for (const [projectName] of projects) {
+      for (const [projectName, files] of projects) {
+        const count = [...files.values()].reduce((sum, f) => sum + f.length, 0);
         const projectItem = new ProjectTreeItem(
           projectName,
           solution,
-          vscode.TreeItemCollapsibleState.Collapsed
+          vscode.TreeItemCollapsibleState.Collapsed,
+          count
         );
         projectItems.push(projectItem);
       }
@@ -2165,7 +2219,8 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
           projectName,
           vscode.TreeItemCollapsibleState.Collapsed,
           hasDeletable,
-          hasMedium
+          hasMedium,
+          findings.length
         );
         fileItem.tooltip = filePathDisplay;
         fileItems.push(fileItem);
@@ -2201,14 +2256,37 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
         );
         const projectInfo = f.ProjectFilePath ? `Project: ${path.basename(f.ProjectFilePath)}` : "";
         const fileInfo = f.FilePathDisplay ? `File: ${f.FilePathDisplay}` : "";
-        ti.tooltip = `${f.ContainingType} — ${f.Remarks}\n${projectInfo}\n${fileInfo}`.trim();
-        ti.description = `Ln ${f.Line} (${f.Accessibility})`;
+        const explanation = this.buildExplanation(f);
+        ti.tooltip = `${f.ContainingType} — ${f.Remarks}\n${projectInfo}\n${fileInfo}\n\n${explanation}`.trim();
         return ti;
       });
       return Promise.resolve(items);
     }
 
     return Promise.resolve([]);
+  }
+
+  private buildExplanation(f: Finding): string {
+    const parts: string[] = [];
+    parts.push(`**Why unused:** ${f.Remarks}`);
+    if (f.confidence !== undefined) {
+      let reason = "";
+      if (f.confidence >= 80) {
+        reason = "No references found anywhere in the solution.";
+      } else if (f.confidence >= 50) {
+        reason = "Few or indirect references found; may be used externally or via reflection.";
+      } else {
+        reason = "Some references exist, but analysis confidence is low.";
+      }
+      parts.push(`**Confidence:** ${f.confidence}% — ${reason}`);
+    }
+    if (f.Accessibility === "public") {
+      parts.push("**Note:** Public symbols may be used by external assemblies not analyzed here.");
+    }
+    if (f.SymbolKind === "Type" && f.confidence !== undefined && f.confidence >= 80) {
+      parts.push("**Note:** Type has no derived classes or interface implementations in the solution.");
+    }
+    return parts.join("\n");
   }
 }
 
@@ -2225,11 +2303,15 @@ class MessageTreeItem extends TreeItemBase {
 class SolutionTreeItem extends TreeItemBase {
   constructor(
     public readonly label: string,
-    state: vscode.TreeItemCollapsibleState
+    state: vscode.TreeItemCollapsibleState,
+    public readonly findingCount: number = 0
   ) {
     super(label, state);
     this.contextValue = "solution";
     this.iconPath = new vscode.ThemeIcon("root-folder");
+    if (findingCount > 0) {
+      this.description = `${findingCount} finding${findingCount !== 1 ? "s" : ""}`;
+    }
   }
 }
 
@@ -2237,11 +2319,15 @@ class ProjectTreeItem extends TreeItemBase {
   constructor(
     public readonly label: string,
     public readonly solutionName: string,
-    state: vscode.TreeItemCollapsibleState
+    state: vscode.TreeItemCollapsibleState,
+    public readonly findingCount: number = 0
   ) {
     super(label, state);
     this.contextValue = "project";
     this.iconPath = new vscode.ThemeIcon("project");
+    if (findingCount > 0) {
+      this.description = `${findingCount} finding${findingCount !== 1 ? "s" : ""}`;
+    }
   }
 }
 
@@ -2256,7 +2342,8 @@ class FileTreeItem extends TreeItemBase {
     public readonly projectName: string,
     state: vscode.TreeItemCollapsibleState,
     hasDeletable: boolean = false,
-    hasMedium: boolean = false
+    hasMedium: boolean = false,
+    public readonly findingCount: number = 0
   ) {
     super(label, state);
     this.contextValue = "file";
@@ -2269,6 +2356,10 @@ class FileTreeItem extends TreeItemBase {
       this.iconPath = new vscode.ThemeIcon("file-code");
     } else {
       this.iconPath = path.extname(filePath).toLowerCase() === '.cs' ? new vscode.ThemeIcon("file-code") : new vscode.ThemeIcon("file");
+    }
+
+    if (findingCount > 0) {
+      this.description = `${findingCount} finding${findingCount !== 1 ? "s" : ""}`;
     }
   }
 }
