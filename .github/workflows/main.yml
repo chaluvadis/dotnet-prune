@@ -51,6 +51,9 @@ jobs:
       run: dotnet test --logger "console;verbosity=detailed"
       working-directory: tests/FindUnused.Tests
 
+    - name: Install vsce
+      run: npm i -g @vscode/vsce
+
     - name: Package extension
       run: |
         # Use the tag name as part of the VSIX filename when available.
