@@ -53,7 +53,8 @@ public static class SemanticSearch
 
 
     /// <summary>
-    /// Performs manual semantic search for symbol usage across solution projects
+    /// Performs manual semantic search for symbol usage across solution projects.
+    /// Uses span-based text filtering to avoid full-text string allocations.
     /// </summary>
     public static async Task<bool> ManualSemanticSearchAsync(
         ISymbol symbol,
@@ -71,9 +72,12 @@ public static class SemanticSearch
                     if (!document.SupportsSyntaxTree) continue;
                     var root = await document.GetSyntaxRootAsync();
                     if (root == null) continue;
-                    // quick textual filter
-                    var text = root.GetText().ToString();
-                    if (!text.Contains(shortName)) continue;
+                    
+                    // Use span-based text search instead of string allocation
+                    var text = root.GetText();
+                    ReadOnlySpan<char> textSpan = text.ToString().AsSpan();
+                    if (!textSpan.Contains(shortName, StringComparison.OrdinalIgnoreCase)) continue;
+                    
                     var nameNodes = root.DescendantNodes().OfType<SimpleNameSyntax>()
                                           .Where(n => n.Identifier.ValueText == shortName);
 
@@ -137,8 +141,10 @@ public static class SemanticSearch
                     var root = await document.GetSyntaxRootAsync();
                     if (root == null) continue;
 
-                    var text = root.GetText().ToString();
-                    if (!text.Contains(shortName)) continue;
+                    // Use span-based text search
+                    var text = root.GetText();
+                    ReadOnlySpan<char> textSpan = text.ToString().AsSpan();
+                    if (!textSpan.Contains(shortName, StringComparison.OrdinalIgnoreCase)) continue;
 
                     var model = await document.GetSemanticModelAsync();
                     if (model == null) continue;

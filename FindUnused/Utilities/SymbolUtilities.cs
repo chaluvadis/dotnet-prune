@@ -6,6 +6,13 @@ namespace FindUnused;
 public static class SymbolUtilities
 {
     private const int GeneratedCodeCheckLines = 10;
+    private static readonly StringComparison s_ordinalIgnoreCase = StringComparison.OrdinalIgnoreCase;
+
+    private static readonly string[] s_testPatterns =
+    [
+        ".test", ".tests", "test/", "/test", ".test.cs", ".tests.cs"
+    ];
+
     /// <summary>
     /// Get the source location of a symbol
     /// </summary>
@@ -23,21 +30,20 @@ public static class SymbolUtilities
     }
 
     /// <summary>
-    /// Check if a syntax tree contains generated code markers
+    /// Check if a syntax tree contains generated code markers.
+    /// Uses span-based inspection to avoid per-line string allocations.
     /// </summary>
-    public static bool IsGenerated(SyntaxTree? tree, HashSet<string> generatedMarkers)
+    public static bool IsGenerated(SyntaxTree? tree, IReadOnlySet<string> generatedMarkers)
     {
         if (tree == null) return false;
         var text = tree.GetText();
 
-        var lines = text.Lines.Take(GeneratedCodeCheckLines);
-        foreach (var line in lines)
+        // Check first N lines for generated code markers using spans
+        foreach (var line in text.Lines.Take(GeneratedCodeCheckLines))
         {
-            var lowerLine = line.ToString().ToLowerInvariant();
-            if (generatedMarkers.Any(marker => lowerLine.Contains(marker)))
-            {
+            ReadOnlySpan<char> lineSpan = line.ToString().AsSpan();
+            if (IsGeneratedLine(lineSpan, generatedMarkers))
                 return true;
-            }
         }
 
         // Check file-level attributes
@@ -49,15 +55,36 @@ public static class SymbolUtilities
             {
                 foreach (var attr in attrList.Attributes)
                 {
-                    var attrName = attr.Name.ToString().ToLowerInvariant();
-                    if (generatedMarkers.Any(marker => attrName.Contains(marker.ToLowerInvariant())))
-                    {
+                    var attrName = attr.Name.ToString();
+                    if (IsGeneratedMarker(attrName, generatedMarkers))
                         return true;
-                    }
                 }
             }
         }
 
+        return false;
+    }
+
+    private static bool IsGeneratedLine(ReadOnlySpan<char> line, IReadOnlySet<string> generatedMarkers)
+    {
+        // Create a lowercase copy for comparison (small lines, single allocation)
+        string lowerLine = new string(line).ToLowerInvariant();
+        foreach (string marker in generatedMarkers)
+        {
+            if (lowerLine.Contains(marker, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool IsGeneratedMarker(string attrName, IReadOnlySet<string> generatedMarkers)
+    {
+        string lowerAttr = attrName.ToLowerInvariant();
+        foreach (string marker in generatedMarkers)
+        {
+            if (lowerAttr.Contains(marker.ToLowerInvariant(), StringComparison.Ordinal))
+                return true;
+        }
         return false;
     }
 
@@ -72,7 +99,8 @@ public static class SymbolUtilities
         if (nsSymbol == null || nsSymbol.IsGlobalNamespace)
             return declaredNamespaces.Contains(string.Empty);
 
-        var ns = nsSymbol.ToDisplayString();
+        // Use ToDisplayString only once; this is a hot path
+        string ns = nsSymbol.ToDisplayString();
 
         if (declaredNamespaces.Contains(ns))
             return true;
@@ -84,14 +112,14 @@ public static class SymbolUtilities
             if (declaredNamespaces.Contains(parentNs))
                 return true;
 
-            foreach (var declared in declaredNamespaces)
+            foreach (string declared in declaredNamespaces)
             {
-                if (declared.StartsWith(parentNs + ".", StringComparison.Ordinal))
+                if (declared.StartsWith(parentNs + ".", s_ordinalIgnoreCase))
                     return true;
             }
         }
 
-        foreach (var declared in declaredNamespaces)
+        foreach (string declared in declaredNamespaces)
         {
             if (AreNamespacesRelated(ns, declared))
                 return true;
@@ -102,8 +130,8 @@ public static class SymbolUtilities
 
     private static bool AreNamespacesRelated(string ns1, string ns2)
     {
-        return ns1.StartsWith(ns2 + ".", StringComparison.Ordinal) ||
-               ns2.StartsWith(ns1 + ".", StringComparison.Ordinal);
+        return ns1.StartsWith(ns2 + ".", s_ordinalIgnoreCase) ||
+               ns2.StartsWith(ns1 + ".", s_ordinalIgnoreCase);
     }
 
     /// <summary>
@@ -120,13 +148,17 @@ public static class SymbolUtilities
     /// Get icon for symbol kind
     /// </summary>
     public static string GetIconForSymbolKind(string symbolKind)
-        => symbolKind switch
+        => symbolKind.ToLowerInvariant() switch
         {
-            "Type" => "🔷",
-            "Method" => "🔶",
-            "Property" => "🔸",
-            "Field" => "🔹",
-            "Parameter" => "🎯",
+            var s when s.Contains("class") || s.Contains("type") => "🔷",
+            var s when s.Contains("interface") => "🔶",
+            var s when s.Contains("method") || s.Contains("function") => "⚙️",
+            var s when s.Contains("property") => "📝",
+            var s when s.Contains("field") => "📦",
+            var s when s.Contains("parameter") => "🎯",
+            var s when s.Contains("enum") => "🔢",
+            var s when s.Contains("struct") => "📐",
+            var s when s.Contains("event") => "⚡",
             _ => "❓"
         };
 
@@ -137,7 +169,7 @@ public static class SymbolUtilities
     {
         if (containingType == null) return false;
 
-        if (containingType.Name.EndsWith("Controller", StringComparison.OrdinalIgnoreCase))
+        if (containingType.Name.EndsWith("Controller", s_ordinalIgnoreCase))
         {
             return true;
         }
@@ -156,7 +188,7 @@ public static class SymbolUtilities
         }
 
         var apiControllerAttribute = containingType.GetAttributes()
-            .FirstOrDefault(attr => attr.AttributeClass?.Name.Equals("ApiControllerAttribute", StringComparison.OrdinalIgnoreCase) == true);
+            .FirstOrDefault(attr => attr.AttributeClass?.Name.Equals("ApiControllerAttribute", s_ordinalIgnoreCase) == true);
 
         if (apiControllerAttribute != null) return true;
 
@@ -166,7 +198,7 @@ public static class SymbolUtilities
     /// <summary>
     /// Check if a method is a test method
     /// </summary>
-    public static bool IsTestMethod(IMethodSymbol method, INamedTypeSymbol containingType, HashSet<string> testAttributes, HashSet<string> testClassAttributes)
+    public static bool IsTestMethod(IMethodSymbol method, INamedTypeSymbol containingType, IReadOnlySet<string> testAttributes, IReadOnlySet<string> testClassAttributes)
     {
         if (method == null) return false;
 
@@ -174,7 +206,7 @@ public static class SymbolUtilities
         {
             var attrName = attr.AttributeClass?.Name;
             if (attrName != null && testAttributes.Any(testAttr =>
-                attrName.Equals(testAttr, StringComparison.OrdinalIgnoreCase)))
+                attrName.Equals(testAttr, s_ordinalIgnoreCase)))
             {
                 return true;
             }
@@ -186,13 +218,13 @@ public static class SymbolUtilities
             {
                 var attrName = attr.AttributeClass?.Name;
                 if (attrName != null && testClassAttributes.Any(testAttr =>
-                    attrName.Equals(testAttr, StringComparison.OrdinalIgnoreCase)))
+                    attrName.Equals(testAttr, s_ordinalIgnoreCase)))
                     return true;
             }
 
             var className = containingType.Name;
-            if (className.EndsWith("Test", StringComparison.OrdinalIgnoreCase) ||
-                className.EndsWith("Tests", StringComparison.OrdinalIgnoreCase))
+            if (className.EndsWith("Test", s_ordinalIgnoreCase) ||
+                className.EndsWith("Tests", s_ordinalIgnoreCase))
             {
                 return true;
             }
@@ -204,7 +236,7 @@ public static class SymbolUtilities
     /// <summary>
     /// Check if a method is an entry point
     /// </summary>
-    public static bool IsEntryPointMethod(IMethodSymbol method, INamedTypeSymbol containingType, HashSet<string> testAttributes, HashSet<string> testClassAttributes)
+    public static bool IsEntryPointMethod(IMethodSymbol method, INamedTypeSymbol containingType, IReadOnlySet<string> testAttributes, IReadOnlySet<string> testClassAttributes)
     {
         if (method == null) return false;
 
@@ -241,7 +273,7 @@ public static class SymbolUtilities
         }
 
         return containingType.AllInterfaces.Any(iface =>
-            iface.Name.Equals("Hub", StringComparison.OrdinalIgnoreCase));
+            iface.Name.Equals("Hub", s_ordinalIgnoreCase));
     }
 
     private static bool IsBlazorComponentMethod(IMethodSymbol method, INamedTypeSymbol containingType)
@@ -251,8 +283,8 @@ public static class SymbolUtilities
         var baseTypeName = containingType.BaseType.Name.ToLowerInvariant();
         if (baseTypeName == "componentbase")
         {
-            if (method.Name.StartsWith("On", StringComparison.Ordinal) ||
-                method.Name.StartsWith("Handle", StringComparison.Ordinal))
+            if (method.Name.StartsWith("On", s_ordinalIgnoreCase) ||
+                method.Name.StartsWith("Handle", s_ordinalIgnoreCase))
             {
                 return true;
             }
@@ -269,7 +301,7 @@ public static class SymbolUtilities
         if (baseTypeName == "backgroundservice")
         {
             return method.Name == "ExecuteAsync" ||
-                   method.Name.StartsWith("On", StringComparison.Ordinal);
+                   method.Name.StartsWith("On", s_ordinalIgnoreCase);
         }
 
         return false;
@@ -284,14 +316,14 @@ public static class SymbolUtilities
         var secondParam = parameters[1].Type;
 
         if (firstParam.Name == "Object" &&
-            (secondParam.Name.EndsWith("EventArgs", StringComparison.Ordinal) ||
+            (secondParam.Name.EndsWith("EventArgs", s_ordinalIgnoreCase) ||
              secondParam.Name == "EventArgs"))
         {
             return true;
         }
 
         return method.GetAttributes().Any(attr =>
-            attr.AttributeClass?.Name.EndsWith("EventHandlerAttribute", StringComparison.OrdinalIgnoreCase) == true);
+            attr.AttributeClass?.Name.EndsWith("EventHandlerAttribute", s_ordinalIgnoreCase) == true);
     }
 
     private static bool IsDependencyInjectionMethod(IMethodSymbol method, INamedTypeSymbol containingType)

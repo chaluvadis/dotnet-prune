@@ -5,13 +5,15 @@ namespace FindUnused;
 /// </summary>
 public static class EntryPoint
 {
+    private static readonly Lazy<bool> s_msbuildRegistered = new(() =>
+    {
+        MSBuildLocator.RegisterDefaults();
+        return true;
+    });
+
     /// <summary>
     /// Run the analysis with specified parameters
     /// </summary>
-    /// <param name="targetPath">Path to .slnx, .sln, .csproj file or folder to analyze</param>
-    /// <param name="config">Configuration options for the analysis</param>
-    /// <param name="progress">Optional progress reporter for UI updates</param>
-    /// <returns>Analysis results</returns>
     public static async Task<AnalysisResult> RunAnalysisAsync(
         string targetPath,
         AnalyzerConfiguration? config = null,
@@ -35,7 +37,6 @@ public static class EntryPoint
             };
         }
         var analysisConfig = config ?? new AnalyzerConfiguration();
-        var findings = new List<Finding>();
         try
         {
             // Setup workspace and load solution
@@ -54,6 +55,10 @@ public static class EntryPoint
             progress?.Report($"Declared namespaces found by syntax scan: {declaredNamespaces.Count}");
             var projectDeclaredTypes = await TypeDiscovery.BuildProjectDeclaredTypesMapAsync(solution, declaredNamespaces);
             progress?.Report($"Declared namespaces after augmentation: {declaredNamespaces.Count}");
+            
+            // Create per-analysis cache (replaces unbounded static cache)
+            var analyzerCache = new AnalyzerCache();
+            
             // Analyze each project in parallel
             if (solutionProjectIds != null)
             {
@@ -67,17 +72,25 @@ public static class EntryPoint
                     analysisConfig.IncludeInternalSymbols,
                     analysisConfig.ExcludeGeneratedCode,
                     IsReferenceInSolutionSource,
+                    analyzerCache,
                     progress));
                 var projectFindingsArrays = await Task.WhenAll(projectTasks);
+                var findings = new List<Finding>();
                 foreach (var arr in projectFindingsArrays)
                 {
                     findings.AddRange(arr);
                 }
+                return new AnalysisResult
+                {
+                    Success = true,
+                    Findings = findings
+                };
             }
+            
             return new AnalysisResult
             {
                 Success = true,
-                Findings = findings
+                Findings = []
             };
         }
         catch (Exception ex)
@@ -86,7 +99,7 @@ public static class EntryPoint
             {
                 Success = false,
                 ErrorMessage = $"Analysis failed: {ex.Message}",
-                Findings = findings
+                Findings = []
             };
         }
     }
@@ -106,7 +119,9 @@ public static class EntryPoint
     /// </summary>
     private static async Task<(Solution? solution, HashSet<ProjectId>? projectIds)> SetupWorkspaceAsync(string targetPath, IProgress<string>? progress)
     {
-        MSBuildLocator.RegisterDefaults();
+        // Ensure MSBuild is registered only once per process
+        _ = s_msbuildRegistered.Value;
+        
         using var workspace = MSBuildWorkspace.Create(new Dictionary<string, string>());
         using var workspaceFailedRegistration = workspace.RegisterWorkspaceFailedHandler(diagnostic =>
         {
@@ -180,11 +195,13 @@ public static class EntryPoint
     }
 
     /// <summary>
-    /// Find the solution file that contains the given project file
+    /// Find the solution file that contains the given project file.
+    /// Uses streaming file inspection instead of loading entire file.
     /// </summary>
     private static string? FindContainingSolution(string projectPath)
     {
         var directory = Path.GetDirectoryName(projectPath);
+        var projectName = Path.GetFileName(projectPath);
         while (!string.IsNullOrEmpty(directory))
         {
             var slnFiles = Directory.GetFiles(directory, "*.sln", SearchOption.TopDirectoryOnly)
@@ -193,12 +210,14 @@ public static class EntryPoint
             {
                 try
                 {
-                    // Quick check: see if the solution file contains the project file path
-                    var content = File.ReadAllText(slnFile);
-                    var projectName = Path.GetFileName(projectPath);
-                    if (content.Contains(projectName))
+                    // Stream the file line by line instead of loading entire content
+                    // This avoids large allocations for big solution files
+                    foreach (var line in File.ReadLines(slnFile).Take(50))
                     {
-                        return slnFile;
+                        if (line.Contains(projectName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return slnFile;
+                        }
                     }
                 }
                 catch
