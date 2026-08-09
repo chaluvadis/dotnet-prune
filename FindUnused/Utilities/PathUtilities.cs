@@ -8,7 +8,7 @@ public static class PathUtilities
     /// <summary>
     /// Determine if the given file path is located inside an excluded folder
     /// </summary>
-    public static bool IsPathExcluded(string? filePath, HashSet<string> exclusionPatterns)
+    public static bool IsPathExcluded(string? filePath, IReadOnlySet<string> exclusionPatterns)
     {
         if (string.IsNullOrWhiteSpace(filePath)) return false;
         var low = filePath.Replace('\\', '/').ToLowerInvariant();
@@ -18,7 +18,7 @@ public static class PathUtilities
     /// <summary>
     /// Check if a syntax tree is excluded based on its file path
     /// </summary>
-    public static bool SourceTreeIsExcluded(SyntaxTree? tree, HashSet<string> exclusionPatterns)
+    public static bool SourceTreeIsExcluded(SyntaxTree? tree, IReadOnlySet<string> exclusionPatterns)
     {
         if (tree == null) return false;
         return IsPathExcluded(tree.FilePath, exclusionPatterns);

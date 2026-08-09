@@ -64,8 +64,16 @@ public static class Program
             }
             else
             {
-                // Output findings as JSON to stdout for the extension to parse
-                Console.WriteLine(JsonSerializer.Serialize(result.Findings));
+                // Stream findings as JSON to stdout using Utf8JsonWriter
+                // This avoids allocating a large intermediate string
+                await using var writer = new Utf8JsonWriter(Console.OpenStandardOutput());
+                writer.WriteStartArray();
+                foreach (var finding in result.Findings)
+                {
+                    JsonSerializer.Serialize(writer, finding);
+                }
+                writer.WriteEndArray();
+                await writer.FlushAsync();
             }
         }
         catch (Exception ex)
