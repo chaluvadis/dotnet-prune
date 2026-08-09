@@ -943,10 +943,9 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
           return new Promise<boolean>((resolve) => {
             const cfg = getConfig();
 
-            // Build CLI arguments: DLL path + relative target
             const projectDir = path.dirname(chosenPath);
             const relativeTarget = path.basename(chosenPath);
-            const cliArgs: string[] = [dllPath, relativeTarget];
+            const cliArgs: string[] = [dllPath, "--target", relativeTarget];
             this.appendToOutput(`FULL ARGS: dotnet ${cliArgs.join(" ")}`, "debug");
             
             if (!fs.existsSync(dllPath)) {
@@ -1182,7 +1181,7 @@ class UnusedTreeProvider implements vscode.TreeDataProvider<TreeItemBase> {
       );
 
       // Open the DotNetPrune view to show the findings
-      vscode.commands.executeCommand("workbench.view.dotnetprune-views");
+      vscode.commands.executeCommand("workbench.view.extension.dotnetprune-views");
     } finally {
       this.isAnalysisRunning = false;
     }

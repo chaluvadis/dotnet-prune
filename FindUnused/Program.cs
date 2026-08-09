@@ -13,6 +13,13 @@ public static class Program
             {
                 switch (args[i])
                 {
+                    case "--target":
+                        if (i + 1 < args.Length)
+                        {
+                            targetPath = args[i + 1];
+                            i++;
+                        }
+                        break;
                     case "--exclude-public":
                         config.IncludePublicSymbols = false;
                         break;
@@ -34,19 +41,14 @@ public static class Program
                         }
                         i++;
                         break;
-                    default:
-                        if (!args[i].StartsWith("--"))
-                        {
-                            targetPath = args[i];
-                        }
-                        break;
                 }
             }
 
             if (string.IsNullOrWhiteSpace(targetPath))
             {
-                Console.Error.WriteLine("Usage: FindUnused <targetPath>");
+                Console.Error.WriteLine("Usage: FindUnused --target <path>");
                 Console.Error.WriteLine("Options:");
+                Console.Error.WriteLine("  --target <path>         Solution/project path to analyze");
                 Console.Error.WriteLine("  --exclude-public       Exclude public symbols from analysis");
                 Console.Error.WriteLine("  --exclude-internal     Exclude internal symbols from analysis");
                 Console.Error.WriteLine("  --include-generated    Include generated code in analysis");
