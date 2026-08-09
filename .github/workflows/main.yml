@@ -47,6 +47,10 @@ jobs:
       run: dotnet build
       working-directory: FindUnused
 
+    - name: Run .NET tests via Microsoft Testing Platform
+      run: dotnet test --logger "console;verbosity=detailed"
+      working-directory: tests/FindUnused.Tests
+
     - name: Package extension
       run: |
         # Use the tag name as part of the VSIX filename when available.

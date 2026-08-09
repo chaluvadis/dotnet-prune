@@ -85,9 +85,7 @@ public static class TypeDiscovery
 
     /// <summary>
     /// Scans all source documents in the solution and returns the set of declared namespace names.
-    /// - Adds empty string if there are top-level types in the global namespace.
-    /// - Adds each NamespaceDeclaration and FileScopedNamespace declaration name.
-    /// Documents located in excluded paths (NuGet packages, bin, obj, debug) are ignored.
+    /// Uses syntax-only analysis where possible to avoid loading semantic models.
     /// </summary>
     public static async Task<HashSet<string>> GetDeclaredNamespacesFromSolutionAsync(Solution solution)
     {
@@ -102,12 +100,13 @@ public static class TypeDiscovery
                 if (!document.SupportsSyntaxTree) continue;
                 var root = await document.GetSyntaxRootAsync();
                 if (root == null) continue;
-                // File-scoped namespaces
+                
+                // File-scoped namespaces (syntax-only, no semantic model needed)
                 var fileScoped = root.DescendantNodes().OfType<FileScopedNamespaceDeclarationSyntax>()
                     .Select(n => n.Name.ToString().Trim())
                     .Where(s => !string.IsNullOrEmpty(s));
                 foreach (var ns in fileScoped) set.Add(ns);
-                // Normal namespace declarations
+                // Normal namespace declarations (syntax-only)
                 var nsDecls = root.DescendantNodes().OfType<NamespaceDeclarationSyntax>()
                     .Select(n => n.Name.ToString().Trim())
                     .Where(s => !string.IsNullOrEmpty(s));

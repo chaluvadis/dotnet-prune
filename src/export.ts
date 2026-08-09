@@ -64,9 +64,10 @@ export class FindingsExporter {
       if (open === "Open") {
         await vscode.commands.executeCommand("vscode.open", uri);
       }
-    } catch (error: any) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       vscode.window.showErrorMessage(
-        `DotNetPrune: Failed to export findings: ${error.message}`
+        `DotNetPrune: Failed to export findings: ${message}`
       );
     }
   }

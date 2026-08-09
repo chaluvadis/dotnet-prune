@@ -5,6 +5,8 @@ namespace FindUnused;
 /// </summary>
 public static class FindingMetrics
 {
+    private static readonly StringComparison s_ordinalIgnoreCase = StringComparison.OrdinalIgnoreCase;
+
     /// <summary>
     /// Calculate confidence level for a finding (0-100)
     /// Higher confidence = more certain this is truly unused
@@ -25,15 +27,15 @@ public static class FindingMetrics
         }
 
         // Reduce confidence for public symbols (might be used externally)
-        if (accessibility.Equals("public", StringComparison.OrdinalIgnoreCase))
+        if (accessibility.Equals("public", s_ordinalIgnoreCase))
         {
             confidence -= 30;
         }
-        else if (accessibility.Equals("protected", StringComparison.OrdinalIgnoreCase))
+        else if (accessibility.Equals("protected", s_ordinalIgnoreCase))
         {
             confidence -= 20;
         }
-        else if (accessibility.Equals("internal", StringComparison.OrdinalIgnoreCase))
+        else if (accessibility.Equals("internal", s_ordinalIgnoreCase))
         {
             confidence -= 10;
         }
@@ -87,14 +89,14 @@ public static class FindingMetrics
     {
         // High confidence private/internal unused code = warning
         if (confidence >= 80 && 
-            (accessibility.Equals("private", StringComparison.OrdinalIgnoreCase) ||
-             accessibility.Equals("internal", StringComparison.OrdinalIgnoreCase)))
+            (accessibility.Equals("private", s_ordinalIgnoreCase) ||
+             accessibility.Equals("internal", s_ordinalIgnoreCase)))
         {
             return "warning";
         }
 
         // Public symbols or lower confidence = information
-        if (accessibility.Equals("public", StringComparison.OrdinalIgnoreCase) || confidence < 60)
+        if (accessibility.Equals("public", s_ordinalIgnoreCase) || confidence < 60)
         {
             return "information";
         }
@@ -113,18 +115,25 @@ public static class FindingMetrics
     /// </summary>
     public static string GetIconForSymbolKind(string symbolKind)
     {
-        return symbolKind.ToLowerInvariant() switch
-        {
-            var s when s.Contains("class") || s.Contains("type") => "🔷",
-            var s when s.Contains("interface") => "🔶",
-            var s when s.Contains("method") || s.Contains("function") => "⚙️",
-            var s when s.Contains("property") => "📝",
-            var s when s.Contains("field") => "📦",
-            var s when s.Contains("parameter") => "🎯",
-            var s when s.Contains("enum") => "🔢",
-            var s when s.Contains("struct") => "📐",
-            var s when s.Contains("event") => "⚡",
-            _ => "⚠️"
-        };
+        ReadOnlySpan<char> kind = symbolKind.AsSpan();
+        if (kind.Contains("class", s_ordinalIgnoreCase) || kind.Contains("type", s_ordinalIgnoreCase))
+            return "🔷";
+        if (kind.Contains("interface", s_ordinalIgnoreCase))
+            return "🔶";
+        if (kind.Contains("method", s_ordinalIgnoreCase) || kind.Contains("function", s_ordinalIgnoreCase))
+            return "⚙️";
+        if (kind.Contains("property", s_ordinalIgnoreCase))
+            return "📝";
+        if (kind.Contains("field", s_ordinalIgnoreCase))
+            return "📦";
+        if (kind.Contains("parameter", s_ordinalIgnoreCase))
+            return "🎯";
+        if (kind.Contains("enum", s_ordinalIgnoreCase))
+            return "🔢";
+        if (kind.Contains("struct", s_ordinalIgnoreCase))
+            return "📐";
+        if (kind.Contains("event", s_ordinalIgnoreCase))
+            return "⚡";
+        return "⚠️";
     }
 }
